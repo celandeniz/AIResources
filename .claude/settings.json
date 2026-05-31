@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm --filter @dynops/web build)",
+      "Bash(pnpm --filter @dynops/db build)"
+    ]
+  }
+}

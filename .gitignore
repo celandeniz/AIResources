@@ -1,0 +1,21 @@
+node_modules/
+.pnpm-store/
+dist/
+.next/
+out/
+build/
+coverage/
+*.log
+.env
+.env.local
+.DS_Store
+.turbo/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+services/api/prisma/migrations/dev.db*
+
+# local-only
+docker-compose.override.yml

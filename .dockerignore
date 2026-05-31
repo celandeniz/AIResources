@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+.git
+.remember
+**/*.log
+**/.env
+**/__pycache__
+**/.venv
+.pnpm-store

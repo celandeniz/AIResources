@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ──────────────────────────────────────────────────────────────────────────
+   DynamicsOps — "refined operational command center" design tokens.
+   Warm ink-on-paper (light) / deep charcoal (dark). Iris→violet brand accent
+   used precisely. All brand vars are white-label-overridable per workspace
+   (see ThemeProvider applying --brand-* from workspace.branding).
+   ────────────────────────────────────────────────────────────────────────── */
+@layer base {
+  :root {
+    --background: 40 33% 98.5%;
+    --foreground: 233 27% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 233 27% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 233 27% 11%;
+
+    --muted: 240 22% 95.5%;
+    --muted-foreground: 233 11% 44%;
+
+    --secondary: 240 22% 95.5%;
+    --secondary-foreground: 233 27% 16%;
+
+    --accent: 252 70% 96%;
+    --accent-foreground: 252 60% 36%;
+
+    /* brand accent (iris → violet); overridable per workspace */
+    --brand-h: 252;
+    --brand-s: 83%;
+    --brand-l: 60%;
+    --primary: var(--brand-h) var(--brand-s) var(--brand-l);
+    --primary-foreground: 0 0% 100%;
+
+    --success: 152 56% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 33 92% 48%;
+    --warning-foreground: 40 50% 12%;
+    --danger: 0 72% 55%;
+    --danger-foreground: 0 0% 100%;
+
+    --border: 240 20% 89%;
+    --input: 240 20% 89%;
+    --ring: var(--primary);
+
+    --shadow-color: 233 40% 30%;
+    --radius: 0.85rem;
+
+    /* font aliases (the .variable classes are applied on <html> in layout.tsx) */
+    --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+    --font-display: var(--font-fraunces), Georgia, 'Times New Roman', serif;
+  }
+
+  .dark {
+    --background: 233 22% 7.5%;
+    --foreground: 233 18% 92%;
+
+    --card: 233 19% 10.5%;
+    --card-foreground: 233 18% 92%;
+    --popover: 233 21% 9%;
+    --popover-foreground: 233 18% 92%;
+
+    --muted: 233 15% 16%;
+    --muted-foreground: 233 12% 62%;
+
+    --secondary: 233 15% 16%;
+    --secondary-foreground: 233 18% 90%;
+
+    --accent: 252 40% 20%;
+    --accent-foreground: 252 80% 86%;
+
+    --brand-l: 68%;
+    --primary: var(--brand-h) var(--brand-s) var(--brand-l);
+    --primary-foreground: 233 40% 8%;
+
+    --success: 152 52% 46%;
+    --warning: 36 94% 56%;
+    --danger: 0 74% 62%;
+
+    --border: 233 14% 19%;
+    --input: 233 14% 21%;
+    --shadow-color: 233 60% 2%;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: 'ss01', 'cv01', 'cv03';
+  }
+  /* tabular numerals everywhere data lives */
+  .tnum, table, .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+  ::selection {
+    background: hsl(var(--primary) / 0.22);
+  }
+  /* refined scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.25);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.45); background-clip: content-box; }
+}
+
+@layer utilities {
+  /* subtle paper grain for atmosphere/depth */
+  .grain {
+    position: relative;
+  }
+  .grain::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.025;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .mesh {
+    background:
+      radial-gradient(60% 80% at 12% 0%, hsl(var(--primary) / 0.10), transparent 60%),
+      radial-gradient(50% 60% at 100% 0%, hsl(280 80% 60% / 0.08), transparent 55%);
+  }
+  .hairline { box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+  .text-balance { text-wrap: balance; }
+}

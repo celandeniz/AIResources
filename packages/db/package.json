@@ -1,0 +1,30 @@
+{
+  "name": "@dynops/db",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "push": "prisma db push --accept-data-loss --skip-generate",
+    "migrate": "prisma migrate deploy",
+    "seed": "node dist/seed.js",
+    "build": "HOME=/private/tmp prisma generate && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
+  "dependencies": {
+    "@dynops/shared": "workspace:*",
+    "@prisma/client": "^6.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prisma": "^6.3.0",
+    "typescript": "^5.7.3"
+  }
+}

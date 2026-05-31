@@ -1,0 +1,918 @@
+// DynamicsOps AI Resource Platform — single source of truth (18 entities).
+// audit_logs is append-only (trigger added in migration / via raw SQL).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── enums ─────────────────────────────
+enum user_role {
+  admin
+  manager
+  consultant
+  viewer
+}
+
+enum activity_status {
+  new
+  triaging
+  routed
+  in_progress
+  awaiting_approval
+  completed
+  escalated
+  failed
+  archived
+}
+
+enum priority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum activity_channel {
+  email
+  teams
+  calendar
+  devops
+  github
+  opsconnect
+  business_central
+  crm
+  erp
+  sharepoint
+  ticket
+  document
+  manual
+  proactive
+}
+
+enum approval_status {
+  pending
+  approved
+  rejected
+  expired
+  cancelled
+}
+
+enum risk_level {
+  low
+  medium
+  high
+  critical
+}
+
+enum run_status {
+  queued
+  running
+  succeeded
+  failed
+  needs_approval
+  cancelled
+}
+
+enum tool_call_status {
+  proposed
+  awaiting_approval
+  approved
+  executing
+  succeeded
+  failed
+  skipped
+  rejected
+}
+
+enum task_status {
+  open
+  in_progress
+  blocked
+  done
+  cancelled
+}
+
+enum integration_type {
+  ado_org
+  github
+  opsconnect
+  business_central
+  graph_email
+  graph_calendar
+  graph_teams
+  sharepoint
+  crm
+}
+
+enum integration_status {
+  disconnected
+  connected
+  error
+  mock
+}
+
+enum integration_direction {
+  in
+  out
+  both
+}
+
+enum llm_provider {
+  ollama
+  anthropic
+  openai
+  azure_openai
+}
+
+enum ai_resource_status {
+  active
+  paused
+  draft
+  retired
+}
+
+enum message_direction {
+  inbound
+  outbound
+  internal
+}
+
+enum workflow_action_type {
+  route_to_resource
+  create_task
+  create_ticket
+  escalate
+  auto_archive
+  notify
+}
+
+enum document_status {
+  uploaded
+  processing
+  indexed
+  failed
+}
+
+enum permission_effect {
+  allow
+  deny
+}
+
+enum audit_action {
+  create
+  update
+  delete
+  login
+  route
+  draft
+  approve
+  reject
+  execute
+  escalate
+  ingest
+  index
+}
+
+// ───────────────────────────── models ─────────────────────────────
+model users {
+  id             String    @id @default(uuid()) @db.Uuid
+  entra_oid      String?   @unique @db.VarChar(255)
+  email          String    @unique @db.VarChar(320)
+  display_name   String    @db.VarChar(200)
+  role           user_role @default(viewer)
+  manager_id     String?   @db.Uuid
+  approval_limit Decimal?  @db.Decimal(14, 2)
+  is_active      Boolean   @default(true)
+  last_login_at  DateTime? @db.Timestamptz(6)
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @updatedAt @db.Timestamptz(6)
+
+  manager             users?         @relation("user_manager", fields: [manager_id], references: [id], onDelete: SetNull)
+  reports             users[]        @relation("user_manager")
+  escalated_resources ai_resources[] @relation("resource_escalation_manager")
+  approvals_reviewed  approvals[]    @relation("approval_reviewer")
+  approvals_requested approvals[]    @relation("approval_requester")
+  assigned_tasks      tasks[]        @relation("task_assignee")
+  assigned_activities activities[]   @relation("activity_assigned_user")
+  uploaded_documents  documents[]    @relation("document_uploader")
+  audit_logs          audit_logs[]
+  prompt_versions     prompt_versions[] @relation("prompt_version_creator")
+  templates_created   templates[]        @relation("template_creator")
+  permissions         permissions[]  @relation("permission_subject_user")
+  memberships         memberships[]
+
+  @@index([manager_id])
+  @@index([role])
+  @@map("users")
+}
+
+model ai_resources {
+  workspace_id String? @db.Uuid
+  id                    String             @id @default(uuid()) @db.Uuid
+  key                   String             @unique @db.VarChar(80)
+  name                  String             @db.VarChar(160)
+  role                  String             @db.VarChar(200)
+  email                 String?            @db.VarChar(200)
+  description           String?            @db.Text
+  system_prompt         String             @db.Text
+  llm_provider          llm_provider
+  llm_model             String             @db.VarChar(120)
+  temperature           Decimal            @default(0.2) @db.Decimal(3, 2)
+  allowed_tools         Json               @default("[]")
+  config                Json               @default("{}")
+  approval_limit        Decimal?           @db.Decimal(14, 2)
+  confidence_threshold  Decimal            @default(0.75) @db.Decimal(3, 2)
+  escalation_manager_id String?            @db.Uuid
+  escalation_rules      Json               @default("{}")
+  memory_ref            String?            @db.VarChar(255)
+  status                ai_resource_status @default(draft)
+  metrics               Json               @default("{}")
+  created_at            DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime           @updatedAt @db.Timestamptz(6)
+
+  escalation_manager users?           @relation("resource_escalation_manager", fields: [escalation_manager_id], references: [id], onDelete: SetNull)
+  activities         activities[]     @relation("activity_assigned_resource")
+  agent_runs         agent_runs[]
+  workflow_rules     workflow_rules[] @relation("rule_target_resource")
+  tasks              tasks[]          @relation("task_resource")
+  prompt_versions    prompt_versions[]
+  automations        automations[]    @relation("automation_resource")
+
+  @@index([status])
+  @@index([key])
+  @@index([workspace_id])
+  @@map("ai_resources")
+}
+
+// Proactive, recurring jobs a resource runs on a cadence to pursue company
+// vision/growth objectives. Each run creates a synthetic `proactive` activity
+// (pinned to the resource) that flows through the normal draft-first pipeline
+// and can hand off to other departments (cross-department automation).
+model automations {
+  workspace_id String?  @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  resource_id  String   @db.Uuid
+  name         String   @db.VarChar(200)
+  objective    String   @db.Text
+  cadence      String   @default("weekly") @db.VarChar(20) // daily|weekly|monthly|quarterly
+  handoff_to   Json     @default("[]") // resource keys this automation hands work to
+  sample_tasks Json     @default("[]")
+  is_active    Boolean  @default(true)
+  last_run_at  DateTime? @db.Timestamptz(6)
+  next_run_at  DateTime? @db.Timestamptz(6)
+  run_count    Int      @default(0)
+  config       Json     @default("{}")
+  created_by   String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @updatedAt @db.Timestamptz(6)
+
+  resource ai_resources @relation("automation_resource", fields: [resource_id], references: [id], onDelete: Cascade)
+
+  @@unique([resource_id, name])
+  @@index([workspace_id])
+  @@index([resource_id])
+  @@index([is_active, next_run_at])
+  @@map("automations")
+}
+
+model activity_sources {
+  workspace_id String? @db.Uuid
+  id             String           @id @default(uuid()) @db.Uuid
+  name           String           @db.VarChar(160)
+  channel        activity_channel
+  integration_id String?          @db.Uuid
+  external_ref   String?          @db.VarChar(320)
+  config         Json             @default("{}")
+  is_active      Boolean          @default(true)
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime         @updatedAt @db.Timestamptz(6)
+
+  integration integrations? @relation(fields: [integration_id], references: [id], onDelete: SetNull)
+  activities  activities[]
+
+  @@index([channel])
+  @@index([integration_id])
+  @@index([workspace_id])
+  @@map("activity_sources")
+}
+
+model activities {
+  workspace_id String? @db.Uuid
+  id                   String          @id @default(uuid()) @db.Uuid
+  source_id            String?         @db.Uuid
+  channel              activity_channel
+  external_id          String?         @db.VarChar(320)
+  subject              String?         @db.VarChar(500)
+  body                 String?         @db.Text
+  summary              String?         @db.Text
+  category             String?         @db.VarChar(80)
+  status               activity_status @default(new)
+  priority             priority        @default(normal)
+  customer_id          String?         @db.Uuid
+  project_id           String?         @db.Uuid
+  assigned_resource_id String?         @db.Uuid
+  assigned_user_id     String?         @db.Uuid
+  workflow_rule_id     String?         @db.Uuid
+  confidence           Decimal?        @db.Decimal(4, 3)
+  requires_approval    Boolean         @default(false)
+  metadata             Json            @default("{}")
+  due_at               DateTime?       @db.Timestamptz(6)
+  received_at          DateTime        @default(now()) @db.Timestamptz(6)
+  routed_at            DateTime?       @db.Timestamptz(6)
+  first_response_at    DateTime?       @db.Timestamptz(6)
+  completed_at         DateTime?       @db.Timestamptz(6)
+  created_at           DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime        @updatedAt @db.Timestamptz(6)
+
+  source            activity_sources? @relation(fields: [source_id], references: [id], onDelete: SetNull)
+  customer          customers?        @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+  project           projects?         @relation(fields: [project_id], references: [id], onDelete: SetNull)
+  assigned_resource ai_resources?     @relation("activity_assigned_resource", fields: [assigned_resource_id], references: [id], onDelete: SetNull)
+  assigned_user     users?            @relation("activity_assigned_user", fields: [assigned_user_id], references: [id], onDelete: SetNull)
+  workflow_rule     workflow_rules?   @relation(fields: [workflow_rule_id], references: [id], onDelete: SetNull)
+  messages          messages[]
+  documents         documents[]
+  tasks             tasks[]
+  approvals         approvals[]
+  agent_runs        agent_runs[]
+
+  @@unique([source_id, external_id])
+  @@index([status])
+  @@index([priority])
+  @@index([customer_id])
+  @@index([project_id])
+  @@index([assigned_resource_id])
+  @@index([received_at])
+  @@index([workspace_id])
+  @@map("activities")
+}
+
+model customers {
+  workspace_id String? @db.Uuid
+  id             String   @id @default(uuid()) @db.Uuid
+  name           String   @db.VarChar(240)
+  domain         String?  @db.VarChar(255)
+  crm_account_id String?  @db.VarChar(120)
+  industry       String?  @db.VarChar(120)
+  tier           String?  @db.VarChar(40)
+  metadata       Json     @default("{}")
+  is_active      Boolean  @default(true)
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @updatedAt @db.Timestamptz(6)
+
+  projects   projects[]
+  activities activities[]
+  documents  documents[]
+  agent_runs agent_runs[]
+
+  @@index([domain])
+  @@index([crm_account_id])
+  @@index([workspace_id])
+  @@map("customers")
+}
+
+model projects {
+  workspace_id String? @db.Uuid
+  id             String    @id @default(uuid()) @db.Uuid
+  customer_id    String    @db.Uuid
+  name           String    @db.VarChar(240)
+  code           String?   @unique @db.VarChar(60)
+  description    String?   @db.Text
+  status         String    @default("active") @db.VarChar(40)
+  devops_project String?   @db.VarChar(120)
+  start_date     DateTime? @db.Date
+  end_date       DateTime? @db.Date
+  metadata       Json      @default("{}")
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @updatedAt @db.Timestamptz(6)
+
+  customer   customers    @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  activities activities[]
+  tasks      tasks[]
+  documents  documents[]
+  agent_runs agent_runs[]
+
+  @@index([customer_id])
+  @@index([status])
+  @@index([workspace_id])
+  @@map("projects")
+}
+
+model workflows {
+  workspace_id String? @db.Uuid
+  id          String            @id @default(uuid()) @db.Uuid
+  name        String            @db.VarChar(160)
+  description String?           @db.Text
+  channel     activity_channel?
+  is_active   Boolean           @default(true)
+  priority    Int               @default(100)
+  created_at  DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime          @updatedAt @db.Timestamptz(6)
+
+  rules workflow_rules[]
+
+  @@index([is_active])
+  @@index([channel])
+  @@index([workspace_id])
+  @@map("workflows")
+}
+
+model workflow_rules {
+  workspace_id String? @db.Uuid
+  id                   String               @id @default(uuid()) @db.Uuid
+  workflow_id          String               @db.Uuid
+  name                 String               @db.VarChar(160)
+  phase                String               @default("pre_agent") @db.VarChar(20)
+  condition            Json                 @default("{}")
+  action_type          workflow_action_type
+  target_resource_id   String?              @db.Uuid
+  action_config        Json                 @default("{}")
+  priority             Int                  @default(100)
+  confidence_threshold Decimal?             @db.Decimal(3, 2)
+  set_priority         priority?
+  is_active            Boolean              @default(true)
+  stop_on_match        Boolean              @default(true)
+  created_at           DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime             @updatedAt @db.Timestamptz(6)
+
+  workflow        workflows     @relation(fields: [workflow_id], references: [id], onDelete: Cascade)
+  target_resource ai_resources? @relation("rule_target_resource", fields: [target_resource_id], references: [id], onDelete: SetNull)
+  activities      activities[]
+
+  @@index([workflow_id, priority])
+  @@index([action_type])
+  @@index([workspace_id])
+  @@map("workflow_rules")
+}
+
+model agent_runs {
+  workspace_id String? @db.Uuid
+  id                String       @id @default(uuid()) @db.Uuid
+  activity_id       String       @db.Uuid
+  ai_resource_id    String       @db.Uuid
+  customer_id       String?      @db.Uuid
+  project_id        String?      @db.Uuid
+  llm_provider      llm_provider
+  llm_model         String       @db.VarChar(120)
+  input             Json         @default("{}")
+  reasoning_summary String?      @db.Text
+  output            Json         @default("{}")
+  tools_used        Json         @default("[]")
+  confidence_score  Decimal?     @db.Decimal(4, 3)
+  status            run_status   @default(queued)
+  error             String?      @db.Text
+  prompt_tokens     Int?
+  completion_tokens Int?
+  latency_ms        Int?
+  started_at        DateTime?    @db.Timestamptz(6)
+  finished_at       DateTime?    @db.Timestamptz(6)
+  created_at        DateTime     @default(now()) @db.Timestamptz(6)
+
+  activity    activities   @relation(fields: [activity_id], references: [id], onDelete: Cascade)
+  ai_resource ai_resources @relation(fields: [ai_resource_id], references: [id], onDelete: Restrict)
+  customer    customers?   @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+  project     projects?    @relation(fields: [project_id], references: [id], onDelete: SetNull)
+  tool_calls  tool_calls[]
+  approvals   approvals[]
+
+  @@index([activity_id])
+  @@index([ai_resource_id])
+  @@index([status])
+  @@index([created_at])
+  @@index([workspace_id])
+  @@map("agent_runs")
+}
+
+model tool_calls {
+  workspace_id String? @db.Uuid
+  id                    String           @id @default(uuid()) @db.Uuid
+  agent_run_id          String           @db.Uuid
+  name                  String           @db.VarChar(120)
+  args                  Json             @default("{}")
+  requires_approval     Boolean          @default(false)
+  risk_level            risk_level       @default(low)
+  status                tool_call_status @default(proposed)
+  result                Json?
+  error                 String?          @db.Text
+  sequence              Int              @default(0)
+  target_integration_id String?          @db.Uuid
+  executed_by           String?          @db.Uuid
+  executed_at           DateTime?        @db.Timestamptz(6)
+  created_at            DateTime         @default(now()) @db.Timestamptz(6)
+
+  agent_run          agent_runs    @relation(fields: [agent_run_id], references: [id], onDelete: Cascade)
+  target_integration integrations? @relation(fields: [target_integration_id], references: [id], onDelete: SetNull)
+  approval           approvals?
+
+  @@index([agent_run_id, sequence])
+  @@index([status])
+  @@index([target_integration_id])
+  @@index([workspace_id])
+  @@map("tool_calls")
+}
+
+model approvals {
+  workspace_id String? @db.Uuid
+  id              String          @id @default(uuid()) @db.Uuid
+  activity_id     String          @db.Uuid
+  agent_run_id    String?         @db.Uuid
+  tool_call_id    String?         @unique @db.Uuid
+  action          String          @db.VarChar(120)
+  payload         Json            @default("{}")
+  risk_level      risk_level      @default(medium)
+  amount          Decimal?        @db.Decimal(14, 2)
+  reason          String?         @db.VarChar(200)
+  status          approval_status @default(pending)
+  reviewer_id     String?         @db.Uuid
+  requested_by_id String?         @db.Uuid
+  decision_notes  String?         @db.Text
+  expires_at      DateTime?       @db.Timestamptz(6)
+  decided_at      DateTime?       @db.Timestamptz(6)
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime        @updatedAt @db.Timestamptz(6)
+
+  activity     activities  @relation(fields: [activity_id], references: [id], onDelete: Cascade)
+  agent_run    agent_runs? @relation(fields: [agent_run_id], references: [id], onDelete: SetNull)
+  tool_call    tool_calls? @relation(fields: [tool_call_id], references: [id], onDelete: SetNull)
+  reviewer     users?      @relation("approval_reviewer", fields: [reviewer_id], references: [id], onDelete: SetNull)
+  requested_by users?      @relation("approval_requester", fields: [requested_by_id], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([risk_level])
+  @@index([activity_id])
+  @@index([reviewer_id])
+  @@index([workspace_id])
+  @@map("approvals")
+}
+
+model tasks {
+  workspace_id String? @db.Uuid
+  id                   String      @id @default(uuid()) @db.Uuid
+  activity_id          String?     @db.Uuid
+  project_id           String?     @db.Uuid
+  title                String      @db.VarChar(300)
+  description          String?     @db.Text
+  status               task_status @default(open)
+  priority             priority    @default(normal)
+  assignee_user_id     String?     @db.Uuid
+  assignee_resource_id String?     @db.Uuid
+  due_date             DateTime?   @db.Timestamptz(6)
+  external_ref         String?     @db.VarChar(200)
+  metadata             Json        @default("{}")
+  completed_at         DateTime?   @db.Timestamptz(6)
+  created_at           DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime    @updatedAt @db.Timestamptz(6)
+
+  activity          activities?   @relation(fields: [activity_id], references: [id], onDelete: SetNull)
+  project           projects?     @relation(fields: [project_id], references: [id], onDelete: SetNull)
+  assignee_user     users?        @relation("task_assignee", fields: [assignee_user_id], references: [id], onDelete: SetNull)
+  assignee_resource ai_resources? @relation("task_resource", fields: [assignee_resource_id], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([activity_id])
+  @@index([project_id])
+  @@index([assignee_user_id])
+  @@index([workspace_id])
+  @@map("tasks")
+}
+
+model messages {
+  workspace_id String? @db.Uuid
+  id                 String            @id @default(uuid()) @db.Uuid
+  activity_id        String            @db.Uuid
+  direction          message_direction
+  channel            activity_channel
+  author_type        String            @db.VarChar(20)
+  author_user_id     String?           @db.Uuid
+  author_resource_id String?           @db.Uuid
+  from_address       String?           @db.VarChar(320)
+  to_addresses       Json              @default("[]")
+  subject            String?           @db.VarChar(500)
+  body               String?           @db.Text
+  is_draft           Boolean           @default(false)
+  external_id        String?           @db.VarChar(320)
+  metadata           Json              @default("{}")
+  sent_at            DateTime?         @db.Timestamptz(6)
+  created_at         DateTime          @default(now()) @db.Timestamptz(6)
+
+  activity activities @relation(fields: [activity_id], references: [id], onDelete: Cascade)
+
+  @@index([activity_id])
+  @@index([direction])
+  @@index([is_draft])
+  @@index([workspace_id])
+  @@map("messages")
+}
+
+model documents {
+  workspace_id String? @db.Uuid
+  id              String          @id @default(uuid()) @db.Uuid
+  title           String          @db.VarChar(400)
+  source_type     String          @db.VarChar(40)
+  mime_type       String?         @db.VarChar(120)
+  storage_uri     String?         @db.VarChar(600)
+  external_ref    String?         @db.VarChar(400)
+  customer_id     String?         @db.Uuid
+  project_id      String?         @db.Uuid
+  activity_id     String?         @db.Uuid
+  uploaded_by_id  String?         @db.Uuid
+  status          document_status @default(uploaded)
+  embedding_model String?         @db.VarChar(120)
+  chunk_count     Int             @default(0)
+  size_bytes      Int?
+  checksum        String?         @db.VarChar(128)
+  metadata        Json            @default("{}")
+  indexed_at      DateTime?       @db.Timestamptz(6)
+  created_at      DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime        @updatedAt @db.Timestamptz(6)
+
+  customer         customers?         @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+  project          projects?          @relation(fields: [project_id], references: [id], onDelete: SetNull)
+  activity         activities?        @relation(fields: [activity_id], references: [id], onDelete: SetNull)
+  uploaded_by      users?             @relation("document_uploader", fields: [uploaded_by_id], references: [id], onDelete: SetNull)
+  knowledge_chunks knowledge_chunks[]
+
+  @@index([customer_id])
+  @@index([project_id])
+  @@index([status])
+  @@index([checksum])
+  @@index([workspace_id])
+  @@map("documents")
+}
+
+model knowledge_chunks {
+  workspace_id String? @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
+  document_id     String   @db.Uuid
+  ordinal         Int
+  text            String   @db.Text
+  token_count     Int?
+  qdrant_point_id String   @unique @db.VarChar(80)
+  embedding_model String   @db.VarChar(120)
+  customer_id     String?  @db.Uuid
+  project_id      String?  @db.Uuid
+  metadata        Json     @default("{}")
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+
+  document documents @relation(fields: [document_id], references: [id], onDelete: Cascade)
+
+  @@unique([document_id, ordinal])
+  @@index([document_id])
+  @@index([customer_id])
+  @@index([project_id])
+  @@index([workspace_id])
+  @@map("knowledge_chunks")
+}
+
+model integrations {
+  workspace_id String? @db.Uuid
+  id              String                @id @default(uuid()) @db.Uuid
+  type            integration_type
+  name            String                @db.VarChar(160)
+  status          integration_status    @default(mock)
+  direction       integration_direction @default(both)
+  is_mock         Boolean               @default(true)
+  config          Json                  @default("{}")
+  credentials_ref String?               @db.VarChar(255)
+  last_synced_at  DateTime?             @db.Timestamptz(6)
+  last_error      String?               @db.Text
+  created_at      DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime              @updatedAt @db.Timestamptz(6)
+
+  activity_sources activity_sources[]
+  tool_calls       tool_calls[]
+
+  @@unique([type, name])
+  @@index([type])
+  @@index([status])
+  @@index([workspace_id])
+  @@map("integrations")
+}
+
+model permissions {
+  id              String            @id @default(uuid()) @db.Uuid
+  subject_type    String            @db.VarChar(20)
+  subject_user_id String?           @db.Uuid
+  subject_role    user_role?
+  resource        String            @db.VarChar(80)
+  resource_id     String?           @db.Uuid
+  action          String            @db.VarChar(40)
+  scope           Json              @default("{}")
+  effect          permission_effect @default(allow)
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @updatedAt @db.Timestamptz(6)
+
+  subject_user users? @relation("permission_subject_user", fields: [subject_user_id], references: [id], onDelete: Cascade)
+
+  @@index([subject_user_id])
+  @@index([subject_role])
+  @@index([resource, action])
+  @@map("permissions")
+}
+
+model audit_logs {
+  workspace_id String? @db.Uuid
+  id                String       @id @default(uuid()) @db.Uuid
+  actor_type        String       @db.VarChar(20)
+  actor_user_id     String?      @db.Uuid
+  actor_resource_id String?      @db.Uuid
+  action            audit_action
+  entity_type       String       @db.VarChar(60)
+  entity_id         String?      @db.Uuid
+  activity_id       String?      @db.Uuid
+  summary           String?      @db.VarChar(500)
+  before            Json?
+  after             Json?
+  metadata          Json         @default("{}")
+  created_at        DateTime     @default(now()) @db.Timestamptz(6)
+
+  actor_user users? @relation(fields: [actor_user_id], references: [id], onDelete: SetNull)
+
+  @@index([action])
+  @@index([entity_type, entity_id])
+  @@index([activity_id])
+  @@index([actor_user_id])
+  @@index([created_at])
+  @@index([workspace_id])
+  @@map("audit_logs")
+}
+
+model prompt_versions {
+  id             String       @id @default(uuid()) @db.Uuid
+  workspace_id   String?      @db.Uuid
+  ai_resource_id String       @db.Uuid
+  version        Int
+  system_prompt  String       @db.Text
+  created_by     String?      @db.Uuid
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+
+  ai_resource ai_resources @relation(fields: [ai_resource_id], references: [id], onDelete: Cascade)
+  creator     users?       @relation("prompt_version_creator", fields: [created_by], references: [id], onDelete: SetNull)
+
+  @@unique([workspace_id, ai_resource_id, version])
+  @@index([workspace_id])
+  @@index([ai_resource_id, version])
+  @@map("prompt_versions")
+}
+
+model notifications {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspace_id String?  @db.Uuid
+  type         String   @db.VarChar(80)
+  title        String   @db.VarChar(240)
+  message      String   @db.Text
+  read         Boolean  @default(false)
+  metadata     Json?
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([read])
+  @@index([created_at])
+  @@map("notifications")
+}
+
+model templates {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspace_id String?  @db.Uuid
+  name         String   @db.VarChar(240)
+  type         String   @db.VarChar(80)
+  content      String   @db.Text
+  metadata     Json     @default("{}")
+  created_by   String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @updatedAt @db.Timestamptz(6)
+
+  creator users? @relation("template_creator", fields: [created_by], references: [id], onDelete: SetNull)
+
+  @@index([workspace_id])
+  @@index([type])
+  @@map("templates")
+}
+
+model digest_results {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspace_id String?  @db.Uuid
+  kind         String   @db.VarChar(80)
+  status       String   @default("created") @db.VarChar(40)
+  summary      Json     @default("{}")
+  sent_to      Json     @default("[]")
+  error        String?  @db.Text
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([kind])
+  @@index([created_at])
+  @@map("digest_results")
+}
+
+enum workspace_status {
+  active
+  suspended
+  trial
+}
+
+model agent_feedback {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspace_id String?  @db.Uuid
+  agent_run_id String   @db.Uuid
+  user_id      String?  @db.Uuid
+  rating       String   @db.VarChar(8) // 'up' | 'down'
+  note         String?  @db.Text
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([agent_run_id])
+  @@index([workspace_id])
+  @@map("agent_feedback")
+}
+
+// Backtest / "Time Machine" — simulate the AI workforce over real history.
+// Reads real mail read-only; writes ONLY to these tables (no live side effects).
+model backtests {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspace_id String?  @db.Uuid
+  label        String?  @db.VarChar(200)
+  mailbox      String?  @db.VarChar(320)
+  from_date    DateTime @db.Timestamptz(6)
+  to_date      DateTime @db.Timestamptz(6)
+  status       String   @default("pending") @db.VarChar(16) // pending|running|done|failed
+  total        Int      @default(0)
+  processed    Int      @default(0)
+  config       Json     @default("{}") // { sources[], model_override, days, cap, notes }
+  summary      Json     @default("{}")
+  error        String?  @db.Text
+  created_by   String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @updatedAt @db.Timestamptz(6)
+
+  items backtest_items[]
+
+  @@index([workspace_id])
+  @@map("backtests")
+}
+
+model backtest_items {
+  id                  String    @id @default(uuid()) @db.Uuid
+  backtest_id         String    @db.Uuid
+  workspace_id        String?   @db.Uuid
+  source              String    @default("outlook") @db.VarChar(20) // outlook|teams|devops
+  external_id         String?   @db.VarChar(320)
+  subject             String?   @db.VarChar(500)
+  body                String?   @db.Text
+  from_address        String?   @db.VarChar(320)
+  received_at         DateTime? @db.Timestamptz(6)
+  routed_resource_id  String?   @db.Uuid
+  routed_resource_name String?  @db.VarChar(160)
+  draft               Json      @default("{}")
+  reasoning           String?   @db.Text
+  confidence          Decimal?  @db.Decimal(4, 3)
+  tool_intents        Json      @default("[]")
+  decision            String    @default("none") @db.VarChar(16) // auto|approval|escalate|none
+  provider            String?   @db.VarChar(40)
+  model               String?   @db.VarChar(120)
+  latency_ms          Int?
+  error               String?   @db.Text
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+
+  backtest backtests @relation(fields: [backtest_id], references: [id], onDelete: Cascade)
+
+  @@index([backtest_id])
+  @@index([workspace_id])
+  @@map("backtest_items")
+}
+
+model workspaces {
+  id         String           @id @default(uuid()) @db.Uuid
+  name       String           @db.VarChar(200)
+  slug       String           @unique @db.VarChar(80)
+  plan       String           @default("pro") @db.VarChar(40)
+  branding   Json             @default("{}") // { logo_url, accent_hue, accent_sat, accent_lum, display_name }
+  limits     Json             @default("{}") // { seats, monthly_token_budget }
+  status     workspace_status @default(active)
+  created_at DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at DateTime         @updatedAt @db.Timestamptz(6)
+
+  memberships memberships[]
+
+  @@index([slug])
+  @@map("workspaces")
+}
+
+model memberships {
+  id           String    @id @default(uuid()) @db.Uuid
+  workspace_id String    @db.Uuid
+  user_id      String    @db.Uuid
+  role         user_role @default(consultant)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+
+  workspace workspaces @relation(fields: [workspace_id], references: [id], onDelete: Cascade)
+  user      users      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([workspace_id, user_id])
+  @@index([user_id])
+  @@map("memberships")
+}
