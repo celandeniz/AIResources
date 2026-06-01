@@ -58,6 +58,7 @@ export default function InboxPage() {
             <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-44">
               <option value="">All statuses</option>
               <option value="new">New</option>
+              <option value="watching">Watching</option>
               <option value="awaiting_approval">Awaiting approval</option>
               <option value="completed">Completed</option>
               <option value="escalated">Escalated</option>

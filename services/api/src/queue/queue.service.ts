@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 export const ACTIVITY_QUEUE = 'activity.process';
 export const BACKTEST_QUEUE = 'backtest.run';
 export const PROACTIVE_QUEUE = 'proactive.run';
+export const MISSION_QUEUE = 'mission.plan';
 
 @Injectable()
 export class QueueService implements OnModuleDestroy {
@@ -11,17 +12,25 @@ export class QueueService implements OnModuleDestroy {
   readonly activityQueue: Queue;
   readonly backtestQueue: Queue;
   readonly proactiveQueue: Queue;
+  readonly missionQueue: Queue;
 
   constructor() {
     const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
     this.activityQueue = new Queue(ACTIVITY_QUEUE, { connection: { url } as any });
     this.backtestQueue = new Queue(BACKTEST_QUEUE, { connection: { url } as any });
     this.proactiveQueue = new Queue(PROACTIVE_QUEUE, { connection: { url } as any });
+    this.missionQueue = new Queue(MISSION_QUEUE, { connection: { url } as any });
   }
 
   async enqueueProactive(automationId: string) {
     const job = await this.proactiveQueue.add('run', { automationId }, { removeOnComplete: 200, removeOnFail: 200 });
     this.logger.log(`Enqueued proactive automation ${automationId} (job ${job.id})`);
+    return job.id;
+  }
+
+  async enqueueMission(missionId: string) {
+    const job = await this.missionQueue.add('plan', { missionId }, { removeOnComplete: 200, removeOnFail: 200 });
+    this.logger.log(`Enqueued mission ${missionId} (job ${job.id})`);
     return job.id;
   }
 
@@ -45,5 +54,6 @@ export class QueueService implements OnModuleDestroy {
     await this.activityQueue.close();
     await this.backtestQueue.close();
     await this.proactiveQueue.close();
+    await this.missionQueue.close();
   }
 }

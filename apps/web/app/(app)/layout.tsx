@@ -6,7 +6,8 @@ import { useTheme } from 'next-themes';
 import {
   LayoutDashboard, Inbox, Users, CheckSquare, BookOpen, ScrollText, Workflow,
   Plug, Sun, Moon, Bell, Search, ChevronsLeft, LogOut, ChevronDown,
-  Building2, UsersRound, ShieldCheck, History, FileText, Repeat,
+  Building2, UsersRound, ShieldCheck, History, FileText, Repeat, Target, Gauge,
+  BarChart3, Sparkles,
 } from 'lucide-react';
 import { getToken, getUser, logout, api } from '../../lib/api';
 import { CommandPalette } from '../../components/command-palette';
@@ -19,6 +20,7 @@ const SECTIONS = [
   { heading: 'Operate', items: [
     { href: '/inbox', label: 'Activity Inbox', icon: Inbox },
     { href: '/approvals', label: 'Approvals', icon: CheckSquare },
+    { href: '/missions', label: 'Mission Pods', icon: Target },
   ]},
   { heading: 'Workforce', items: [
     { href: '/directory', label: 'AI Resources', icon: Users },
@@ -26,9 +28,12 @@ const SECTIONS = [
     { href: '/automations', label: 'Automations', icon: Repeat },
     { href: '/knowledge', label: 'Knowledge', icon: BookOpen },
     { href: '/templates', label: 'Templates', icon: FileText },
+    { href: '/skills', label: 'Skills', icon: Sparkles },
   ]},
   { heading: 'Insights', items: [
     { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+    { href: '/performance', label: 'Performance', icon: Gauge },
+    { href: '/analyst', label: 'Data Analyst', icon: BarChart3 },
     { href: '/backtest', label: 'Backtest', icon: History },
     { href: '/audit', label: 'Audit & Logs', icon: ScrollText },
   ]},

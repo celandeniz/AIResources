@@ -15,6 +15,7 @@ export const ACTIVITY_CHANNELS = [
   'ticket',
   'document',
   'manual',
+  'whatsapp',
 ] as const;
 export type ActivityChannel = (typeof ACTIVITY_CHANNELS)[number];
 
@@ -71,6 +72,7 @@ export const INTEGRATION_TYPES = [
   'graph_teams',
   'sharepoint',
   'crm',
+  'whatsapp',
 ] as const;
 export type IntegrationType = (typeof INTEGRATION_TYPES)[number];
 

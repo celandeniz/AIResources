@@ -4,12 +4,13 @@ import { Badge } from './ui/badge';
 import { cn } from '../lib/utils';
 import {
   Mail, MessageSquare, Calendar, GitBranch, Github, Building2, Database,
-  FileText, Ticket, Hand, Inbox as InboxIcon,
+  FileText, Ticket, Hand, Inbox as InboxIcon, Phone,
 } from 'lucide-react';
 
 /* Status → badge variant + label */
 const STATUS_MAP: Record<string, { v: any; label: string }> = {
   new: { v: 'neutral', label: 'New' },
+  watching: { v: 'neutral', label: 'Watching' },
   triaging: { v: 'default', label: 'Triaging' },
   routed: { v: 'default', label: 'Routed' },
   in_progress: { v: 'default', label: 'In progress' },
@@ -39,7 +40,7 @@ export const CHANNEL_ICON: Record<string, React.ComponentType<any>> = {
   email: Mail, teams: MessageSquare, calendar: Calendar, devops: GitBranch,
   github: Github, opsconnect: Building2, business_central: Database,
   crm: Database, erp: Database, sharepoint: FileText, ticket: Ticket,
-  document: FileText, manual: Hand,
+  document: FileText, manual: Hand, whatsapp: Phone,
 };
 
 export function ChannelChip({ channel }: { channel: string }) {

@@ -10,7 +10,7 @@ import { Badge } from '../../../../components/ui/badge';
 import { Skeleton } from '../../../../components/ui/skeleton';
 import { Avatar } from '../../../../components/ui/misc';
 import { relativeTime } from '../../../../lib/utils';
-import { ArrowLeft, Sparkles, Wrench, Cpu, ChevronRight, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { ArrowLeft, Sparkles, Wrench, Cpu, ChevronRight, ThumbsUp, ThumbsDown, UserCheck } from 'lucide-react';
 import { toast } from '../../../../components/ui/toaster';
 
 export default function ActivityDetail() {
@@ -109,6 +109,10 @@ export default function ActivityDetail() {
                   <Meta label="Out tokens" value={usage.output ?? '—'} />
                 </div>
 
+                {run.output?.review && (
+                  <PeerReviewBlock review={run.output.review} />
+                )}
+
                 <FeedbackBar runId={run.id} />
 
                 {a.approvals?.filter((x: any) => x.status === 'pending').length > 0 && (
@@ -123,6 +127,27 @@ export default function ActivityDetail() {
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PeerReviewBlock({ review }: { review: any }) {
+  const verdictVariant = review.verdict === 'approve' ? 'success' : 'warning';
+  return (
+    <div className="p-5 border-t border-border">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <UserCheck className="size-3.5" /> Peer Review
+      </div>
+      <div className="flex items-center gap-2 mb-2">
+        <Badge variant={verdictVariant}>{review.verdict}</Badge>
+        <span className="text-xs text-muted-foreground">by {review.reviewer_name}</span>
+        {review.score != null && (
+          <span className="ml-auto text-xs tabular-nums text-muted-foreground">score {(review.score * 100).toFixed(0)}%</span>
+        )}
+      </div>
+      {review.comments && (
+        <p className="text-sm leading-relaxed text-foreground/80 whitespace-pre-wrap">{review.comments}</p>
+      )}
     </div>
   );
 }

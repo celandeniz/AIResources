@@ -4,10 +4,12 @@ import { runBacktest } from './backtest';
 import { runWeeklyDigest } from './weekly-digest';
 import { runDailyBrief } from './daily-brief';
 import { runProactive, tickProactiveScheduler } from './proactive';
+import { planAndStartMission, advanceMissionFromActivity } from './mission';
 
 const ACTIVITY_QUEUE = 'activity.process';
 const BACKTEST_QUEUE = 'backtest.run';
 const PROACTIVE_QUEUE = 'proactive.run';
+const MISSION_QUEUE = 'mission.plan';
 const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const connection = { url, maxRetriesPerRequest: null } as any;
 
@@ -17,9 +19,20 @@ const worker = new Worker(
     const { activityId } = job.data as { activityId: string };
     console.log(`[worker] processing activity ${activityId} (job ${job.id})`);
     await processActivity(activityId);
+    // Mission-task activities advance their mission graph on completion.
+    await advanceMissionFromActivity(activityId).catch((e) => console.error('[mission] advance failed:', e.message));
     console.log(`[worker] done activity ${activityId}`);
   },
   { connection, concurrency: 5 },
+);
+
+// Mission planning — decomposes a goal into a task graph, then starts execution.
+const missionWorker = new Worker(
+  MISSION_QUEUE,
+  async (job) => {
+    await planAndStartMission(job.data.missionId);
+  },
+  { connection, concurrency: 2 },
 );
 
 // Backtest runs are long (many sequential LLM calls) → low concurrency.
@@ -45,12 +58,12 @@ const proactiveWorker = new Worker(
 
 const proactiveQueue = new Queue(PROACTIVE_QUEUE, { connection: { url } as any });
 
-for (const w of [worker, backtestWorker, proactiveWorker]) {
+for (const w of [worker, backtestWorker, proactiveWorker, missionWorker]) {
   w.on('failed', (job, err) => console.error(`[worker] job ${job?.id} failed:`, err.message));
   w.on('completed', (job) => console.log(`[worker] job ${job.id} completed`));
 }
 
-console.log(`[worker] listening on "${ACTIVITY_QUEUE}" + "${BACKTEST_QUEUE}" + "${PROACTIVE_QUEUE}" (redis ${url}, agent ${process.env.AGENT_URL})`);
+console.log(`[worker] listening on "${ACTIVITY_QUEUE}" + "${BACKTEST_QUEUE}" + "${PROACTIVE_QUEUE}" + "${MISSION_QUEUE}" (redis ${url}, agent ${process.env.AGENT_URL})`);
 
 let digestTimer: NodeJS.Timeout | undefined;
 if (process.env.ENABLE_DIGEST === 'true') {
@@ -87,6 +100,7 @@ process.on('SIGTERM', async () => {
   await worker.close();
   await backtestWorker.close();
   await proactiveWorker.close();
+  await missionWorker.close();
   await proactiveQueue.close();
   process.exit(0);
 });

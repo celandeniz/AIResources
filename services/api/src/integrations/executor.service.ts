@@ -6,18 +6,26 @@ import { getAdapter } from './mock-adapters';
 import { GraphEmailAdapter } from './graph/graph-email.adapter';
 import { GraphTeamsAdapter } from './graph/graph-teams.adapter';
 import { graphConfigured } from './graph/graph-client';
+import { whatsAppAdapter, whatsappConfigured } from './whatsapp/whatsapp.adapter';
 import { TOOL_REGISTRY, isKnownTool, IntegrationKind, ToolName } from '@dynops/shared';
 import { tenantStore } from '../common/tenant';
 import type { ConnectorAdapter, ConnectionInfo } from './contracts';
+import { runReport } from '../modules/analyst/reports.service';
 
 const graphEmail = new GraphEmailAdapter();
 const graphTeams = new GraphTeamsAdapter();
 
-// Real adapter when the connection is live (is_mock=false) and Graph is configured; else mock.
+// Real adapter when the connection is live (is_mock=false) and the relevant
+// credential set is configured; else fall through to the mock adapter.
 function pickAdapter(kind: IntegrationKind, conn: ConnectionInfo | null): ConnectorAdapter {
-  if (conn && !conn.isMock && graphConfigured()) {
-    if (kind === 'email') return graphEmail;
-    if (kind === 'teams') return graphTeams;
+  if (conn && !conn.isMock) {
+    if ((kind === 'email' || kind === 'teams') && graphConfigured()) {
+      if (kind === 'email') return graphEmail;
+      if (kind === 'teams') return graphTeams;
+    }
+    if (kind === 'whatsapp' && whatsappConfigured()) {
+      return whatsAppAdapter;
+    }
   }
   return getAdapter(kind);
 }
@@ -32,6 +40,7 @@ const KIND_TO_TYPE: Partial<Record<IntegrationKind, string>> = {
   opsconnect: 'opsconnect',
   business_central: 'business_central',
   crm: 'crm',
+  whatsapp: 'whatsapp',
 };
 
 @Injectable()
@@ -86,6 +95,14 @@ export class ExecutorService {
     const wsId = (tc.agent_run as any)?.workspace_id;
     if (wsId) tenantStore.enterWith({ workspaceId: wsId });
 
+    // WhatsApp replies: if the agent didn't specify a recipient, resolve it from
+    // the originating activity (the sender's phone is stored as conversation_id).
+    if (tool === 'send_whatsapp_message' && !args.to && activityId) {
+      const act = await this.prisma.activities.findUnique({ where: { id: activityId } });
+      const meta = (act?.metadata as any) ?? {};
+      args.to = meta.conversation_id ?? meta.wa_from ?? (typeof meta.from === 'string' ? (meta.from.match(/\d{6,}/)?.[0]) : undefined);
+    }
+
     await this.prisma.tool_calls.update({ where: { id: toolCallId }, data: { status: 'executing' } });
 
     try {
@@ -102,7 +119,10 @@ export class ExecutorService {
         result = await adapter.execute(tool, args, conn);
         // Side effects that also belong in our own DB:
         if (tool === 'send_email' || tool === 'send_proposal') {
-          await this.recordOutboundMessage(activityId, args, conn.name);
+          await this.recordOutboundMessage(activityId, args, conn.name, 'email');
+        }
+        if (tool === 'send_whatsapp_message') {
+          await this.recordOutboundMessage(activityId, args, conn.name, 'whatsapp');
         }
         // attribute outbound connection for counting
         await this.prisma.tool_calls.update({ where: { id: toolCallId }, data: { target_integration_id: conn.id } });
@@ -175,8 +195,65 @@ export class ExecutorService {
     if (tool === 'handoff') {
       return this.executeHandoff(args, { activityId, workspaceId, sourceResourceId });
     }
+    if (tool === 'post_message') {
+      // Inter-agent message into the mission feed (blackboard). Resolves the
+      // mission from the source activity's metadata.
+      let missionId: string | null = null;
+      if (activityId) {
+        const act = await this.prisma.activities.findUnique({ where: { id: activityId } });
+        missionId = ((act?.metadata as any)?.mission_id as string) ?? null;
+      }
+      const body = String(args.body ?? args.message ?? args.text ?? '').slice(0, 4000);
+      if (!body) return { ok: false, detail: 'post_message requires a body' };
+      await (this.prisma as any).agent_messages.create({
+        data: {
+          workspace_id: workspaceId ?? undefined,
+          mission_id: missionId,
+          from_resource_id: sourceResourceId ?? null,
+          to_resource_id: (args.to as string) ?? null,
+          kind: 'status',
+          body,
+        },
+      });
+      return { ok: true, detail: 'Posted to mission feed' };
+    }
     if (tool === 'rag_search') {
       return { ok: true, detail: 'rag_search is read-only; performed during reasoning' };
+    }
+    if (tool === 'run_report') {
+      const reportKey = String(args.report ?? '').trim();
+      if (!reportKey) return { ok: false, detail: 'run_report requires args.report' };
+      try {
+        const result = await runReport(this.prisma, reportKey, args.params ?? {});
+        return { ok: true, result };
+      } catch (e) {
+        return { ok: false, detail: (e as Error).message };
+      }
+    }
+    if (tool === 'make_chart') {
+      const type = args.type && ['bar', 'donut', 'line'].includes(String(args.type)) ? String(args.type) : 'bar';
+      return { ok: true, chart: { type, title: args.title ?? 'Chart', ...args } };
+    }
+    if (tool === 'remember') {
+      const content = String(args.content ?? args.note ?? args.text ?? '').trim();
+      if (!content) return { ok: false, detail: 'remember requires content' };
+      // Resolve customer_id from activity when available
+      let customerId: string | null = null;
+      if (activityId) {
+        const act = await this.prisma.activities.findUnique({ where: { id: activityId }, select: { customer_id: true } });
+        customerId = act?.customer_id ?? null;
+      }
+      await (this.prisma as any).resource_memories.create({
+        data: {
+          workspace_id: workspaceId ?? undefined,
+          resource_id: sourceResourceId ?? undefined,
+          customer_id: customerId ?? undefined,
+          scope: (args.scope as string) ?? 'general',
+          content,
+          source_activity_id: activityId ?? undefined,
+        },
+      });
+      return { ok: true, detail: 'Saved to memory' };
     }
     return { ok: true, detail: `${tool} (internal, no-op)` };
   }
@@ -224,17 +301,22 @@ export class ExecutorService {
     return { ok: true, external_id: activity.id, detail: `Handed off to ${resource.name}` };
   }
 
-  private async recordOutboundMessage(activityId: string | undefined, args: any, connName: string) {
+  private async recordOutboundMessage(activityId: string | undefined, args: any, connName: string, channel: 'email' | 'whatsapp' = 'email') {
     if (!activityId) return;
+    // For WhatsApp, `to` is a single phone number string; wrap it in an array for
+    // consistency with the messages.to_addresses Json field.
+    const toAddresses = channel === 'whatsapp'
+      ? [String(args.to ?? '')].filter(Boolean)
+      : ((args.to ?? args.recipients ?? []) as any);
     await this.prisma.messages.create({
       data: {
         activity_id: activityId,
         direction: 'outbound',
-        channel: 'email',
+        channel,
         author_type: 'ai_resource',
-        to_addresses: (args.to ?? args.recipients ?? []) as any,
+        to_addresses: toAddresses as any,
         subject: args.subject ?? null,
-        body: args.body ?? args.content ?? null,
+        body: args.body ?? args.message ?? args.content ?? null,
         is_draft: false,
         sent_at: new Date(),
         metadata: { via: connName },

@@ -1,5 +1,5 @@
 import { PrismaClient } from '@dynops/db';
-import { TOOL_REGISTRY, isKnownTool, type AgentRunRequest } from '@dynops/shared';
+import { TOOL_REGISTRY, isKnownTool, type AgentRunRequest, type ToolName } from '@dynops/shared';
 import { matchRoutingRule, type RuleRow } from './rules';
 import { runAgent, executeToolCallViaApi } from './agent-client';
 
@@ -54,6 +54,40 @@ export async function processActivity(activityId: string) {
   if (!activity) throw new Error(`activity ${activityId} not found`);
   const wsId = activity.workspace_id; // tenant scope for all writes in this job
 
+  // ── 0. Passive email watch — if owner is not a direct To recipient, park it ─
+  if (
+    process.env.EMAIL_WATCH_ENABLED !== 'false' &&
+    activity.channel === 'email'
+  ) {
+    const owner = (process.env.WATCH_OWNER_EMAIL ?? 'deniz@dynamicsops.com').toLowerCase();
+    const to: string[] = ((activity.metadata as any)?.to ?? []).map((x: string) => x.toLowerCase());
+    // Only apply watch logic when we actually have recipient data; if to is empty, treat as direct (safe default)
+    if (to.length > 0) {
+      const directToOwner = to.includes(owner);
+      if (!directToOwner) {
+        await prisma.activities.update({
+          where: { id: activityId },
+          data: {
+            status: 'watching',
+            metadata: {
+              ...(activity.metadata as any),
+              watch: { active: true, reason: 'not direct to owner', since: new Date().toISOString() },
+            },
+          },
+        });
+        await audit({
+          workspaceId: wsId,
+          action: 'route',
+          entityType: 'activities',
+          entityId: activityId,
+          activityId,
+          summary: 'Passive watch — not addressed directly to owner; awaiting team reply',
+        });
+        return;
+      }
+    }
+  }
+
   // ── 1. Routing (pre_agent rules) ───────────────────────────────────────
   let resourceId = activity.assigned_resource_id;
   let matchedRuleId: string | null = activity.workflow_rule_id;
@@ -103,17 +137,66 @@ export async function processActivity(activityId: string) {
     take: 5,
   });
 
+  // ── 2c. Fetch recent per-resource memories and inject into rag_hits ────────
+  const memoryHits: { chunk_id: string; title: string; score: number; text: string }[] = [];
+  try {
+    // Tenant scope: the worker uses a raw PrismaClient (no tenant-guard), so we
+    // MUST filter by workspace_id here — the same resource key handling activities
+    // in different workspaces would otherwise mix memories across tenants.
+    const memFilter: any = { resource_id: resource.id, workspace_id: wsId };
+    if (activity.customer_id) {
+      memFilter.OR = [{ customer_id: activity.customer_id }, { customer_id: null }];
+    }
+    const memories = await (prisma as any).resource_memories.findMany({
+      where: memFilter,
+      orderBy: { created_at: 'desc' },
+      take: 5,
+    });
+    for (const mem of memories) {
+      memoryHits.push({ chunk_id: `memory:${mem.id}`, title: 'Memory', score: 1, text: mem.content });
+    }
+  } catch (_) { /* table may not exist yet before first migration */ }
+
+  // ── 2b. Skills composition (P4b) ──────────────────────────────────────────
+  // Read attached skill keys from resource.config.skills; fetch active skill rows;
+  // append prompt_fragments and union tools into the request (safe, deduped).
+  let composedSystemPrompt = resource.system_prompt;
+  let composedTools: string[] = (resource.allowed_tools as string[]) ?? [];
+  try {
+    const attachedSkillKeys: string[] = Array.isArray((resource.config as any)?.skills)
+      ? (resource.config as any).skills
+      : [];
+    if (attachedSkillKeys.length > 0) {
+      const skills = await (prisma as any).skills.findMany({
+        where: { key: { in: attachedSkillKeys }, is_active: true },
+      });
+      const fragmentParts: string[] = [];
+      for (const skill of skills) {
+        if (skill.prompt_fragment) fragmentParts.push(skill.prompt_fragment);
+        const skillTools: string[] = Array.isArray(skill.tools) ? skill.tools : [];
+        for (const t of skillTools) {
+          if (isKnownTool(t) && !composedTools.includes(t)) {
+            composedTools = [...composedTools, t];
+          }
+        }
+      }
+      if (fragmentParts.length > 0) {
+        composedSystemPrompt = composedSystemPrompt + '\n\n## ATTACHED SKILLS\n' + fragmentParts.join('\n\n');
+      }
+    }
+  } catch (_) { /* skills table may not exist before first migration */ }
+
   const req: AgentRunRequest = {
     run_id: run.id,
     workspace_id: wsId ?? undefined,
     ai_resource: {
       key: resource.key,
       name: resource.name,
-      system_prompt: resource.system_prompt,
+      system_prompt: composedSystemPrompt,
       provider: resource.llm_provider,
       model: resource.llm_model,
       temperature: Number(resource.temperature),
-      tools: (resource.allowed_tools as string[]) ?? [],
+      tools: composedTools,
       confidence_threshold: threshold,
     },
     activity: {
@@ -129,7 +212,10 @@ export async function processActivity(activityId: string) {
     context: {
       thread: activity.messages.map((m: any) => ({ role: m.direction === 'inbound' ? 'external' : 'internal', from: m.from_address ?? undefined, text: m.body ?? '' })),
       rag_hints: [],
-      rag_hits: templates.map((t: any) => ({ chunk_id: `template:${t.id}`, document_id: t.id, title: `Template: ${t.name}`, score: 1, text: t.content })),
+      rag_hits: [
+        ...memoryHits,
+        ...templates.map((t: any) => ({ chunk_id: `template:${t.id}`, document_id: t.id, title: `Template: ${t.name}`, score: 1, text: t.content })),
+      ],
     },
     options: { max_tool_intents: 5 },
   };
@@ -179,6 +265,74 @@ export async function processActivity(activityId: string) {
     });
   }
   await audit({ workspaceId: wsId, action: 'draft', entityType: 'agent_runs', entityId: run.id, activityId, actorResourceId: resource.id, summary: `Draft by ${resource.name} (confidence ${confidence.toFixed(2)})` });
+
+  // ── 3b. Peer-review gate (2a) ──────────────────────────────────────────
+  let peerReviewForcedApproval = false;
+  const reviewerKey = (resource.config as any)?.reviewer_key as string | undefined;
+  if (reviewerKey && resp.draft?.content) {
+    try {
+      const reviewerResource = await prisma.ai_resources.findUnique({ where: { key: reviewerKey } });
+      if (reviewerResource) {
+        const draftContent = resp.draft.content;
+        const reviewSubject = `[Review] ${activity.subject ?? '(no subject)'}`;
+        const reviewBody = `REVIEW THE FOLLOWING DRAFT produced by ${resource.name} (${resource.role}). Respond with: verdict (approve|revise), 2-4 short comments, and a quality score 0.0-1.0.\n\nSUBJECT: ${activity.subject ?? '(no subject)'}\n\nDRAFT:\n${draftContent}`;
+        const reviewReq: AgentRunRequest = {
+          run_id: `review-${run.id}`,
+          workspace_id: wsId ?? undefined,
+          ai_resource: {
+            key: reviewerResource.key,
+            name: reviewerResource.name,
+            system_prompt: reviewerResource.system_prompt,
+            provider: reviewerResource.llm_provider,
+            model: reviewerResource.llm_model,
+            temperature: Number(reviewerResource.temperature),
+            tools: [],
+            confidence_threshold: Number(reviewerResource.confidence_threshold),
+          },
+          activity: {
+            id: activity.id,
+            channel: activity.channel,
+            subject: reviewSubject,
+            body: reviewBody,
+            priority: activity.priority,
+            customer: activity.customer ? { id: activity.customer.id, name: activity.customer.name, tier: activity.customer.tier } : null,
+            project: null,
+            received_at: activity.received_at?.toISOString(),
+          },
+          context: { thread: [], rag_hints: [], rag_hits: [] },
+          options: { max_tool_intents: 0 },
+        };
+        const reviewResp = await runAgent(reviewReq);
+        const reviewText = `${reviewResp.reasoning_summary ?? ''} ${reviewResp.draft?.content ?? ''}`.toLowerCase();
+        const verdict = reviewText.includes('revise') ? 'revise' : 'approve';
+        const score = reviewResp.confidence ?? 0.8;
+        const comments = (reviewResp.draft?.content ?? '').trim().slice(0, 600);
+        // Merge review into the original agent_run output
+        const existingOutput = (run as any).output ?? resp;
+        await prisma.agent_runs.update({
+          where: { id: run.id },
+          data: {
+            output: {
+              ...(existingOutput as any),
+              review: {
+                reviewer_key: reviewerKey,
+                reviewer_name: reviewerResource.name,
+                verdict,
+                score,
+                comments,
+              },
+            } as any,
+          },
+        });
+        if (verdict === 'revise') {
+          peerReviewForcedApproval = true;
+        }
+      }
+    } catch (e) {
+      // Peer review failure is non-fatal; log and continue
+      console.warn(`Peer review failed for run ${run.id}:`, (e as Error).message);
+    }
+  }
 
   // ── 4. Post-agent gates → tool_calls + approvals ───────────────────────
   let createdApproval = false;
@@ -238,6 +392,30 @@ export async function processActivity(activityId: string) {
         await prisma.tool_calls.update({ where: { id: toolCall.id }, data: { status: 'failed', error: (e as Error).message } });
       }
     }
+  }
+
+  // If peer review verdict was 'revise' and no approval was already created, force one
+  if (peerReviewForcedApproval && !createdApproval) {
+    createdApproval = true;
+    await prisma.approvals.create({
+      data: {
+        workspace_id: wsId,
+        activity_id: activityId,
+        agent_run_id: run.id,
+        action: 'peer_review_revise',
+        payload: {} as any,
+        risk_level: 'medium',
+        reason: 'peer_review_revise',
+        status: 'pending',
+      },
+    });
+    await notify({
+      workspaceId: wsId,
+      type: 'approval_created',
+      title: 'Peer review: revision recommended',
+      message: `Reviewer flagged draft by ${resource.name} for "${activity.subject ?? 'activity'}" — please review.`,
+      metadata: { activityId, agentRunId: run.id },
+    });
   }
 
   // ── 5. Final activity status ───────────────────────────────────────────

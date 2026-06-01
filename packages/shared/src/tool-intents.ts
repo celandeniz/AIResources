@@ -18,6 +18,7 @@ export type ToolName =
   | 'update_calendar_event'
   | 'create_task'
   | 'rag_search'
+  | 'post_message'
   // azure devops (multi-org)
   | 'devops_create_workitem'
   | 'devops_update_workitem'
@@ -45,7 +46,11 @@ export type ToolName =
   | 'create_document'
   | 'generate_quote'
   | 'send_proposal'
-  | 'handoff';
+  | 'handoff'
+  | 'remember'
+  | 'run_report'
+  | 'make_chart'
+  | 'send_whatsapp_message';
 
 export type IntegrationKind =
   | 'email'
@@ -56,6 +61,7 @@ export type IntegrationKind =
   | 'opsconnect'
   | 'business_central'
   | 'crm'
+  | 'whatsapp'
   | 'internal';
 
 export interface ToolDef {
@@ -102,6 +108,11 @@ export const TOOL_REGISTRY: Record<ToolName, ToolDef> = {
   generate_quote: { name: 'generate_quote', sensitive: true, risk: 'medium', targets: 'internal', monetary: true, description: 'Produce a priced quote.' },
   send_proposal: { name: 'send_proposal', sensitive: true, risk: 'high', targets: 'email', description: 'Deliver a proposal to a customer (always approval).' },
   handoff: { name: 'handoff', sensitive: false, risk: 'low', targets: 'internal', description: 'Route to another AI Resource.' },
+  post_message: { name: 'post_message', sensitive: false, risk: 'low', targets: 'internal', description: 'Post a status/question to the mission feed (inter-agent messaging).' },
+  remember: { name: 'remember', sensitive: false, risk: 'low', targets: 'internal', description: "Save a durable note to the resource's long-term memory." },
+  run_report: { name: 'run_report', sensitive: false, risk: 'low', targets: 'internal', description: 'Run a named report from the safe catalog and return rows.' },
+  make_chart: { name: 'make_chart', sensitive: false, risk: 'low', targets: 'internal', description: 'Describe a chart (bar/donut/line) for the UI to render.' },
+  send_whatsapp_message: { name: 'send_whatsapp_message', sensitive: true, risk: 'high', targets: 'whatsapp', description: 'Send a WhatsApp message to a customer (always approval).' },
 };
 
 // Tools that ALWAYS require human approval regardless of confidence/limit.

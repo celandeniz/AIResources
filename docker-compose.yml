@@ -84,6 +84,26 @@ services:
       # in .env to your vault folder; ENABLE_OBSIDIAN_SYNC drives the daily re-index.
       OBSIDIAN_VAULT_PATH: /vault
       ENABLE_OBSIDIAN_SYNC: ${ENABLE_OBSIDIAN_SYNC:-true}
+      # Microsoft Teams bot (Phase 3). FAIL-CLOSED: with no TEAMS_BOT_SECRET set, the
+      # /teams/* endpoints reject everything (bot disabled). No hardcoded default —
+      # set a random TEAMS_BOT_SECRET in .env to enable the dev gate. Production:
+      # set App ID/password and wire Bot Framework JWT validation (see infra/teams-bot-setup.md).
+      TEAMS_BOT_APP_ID: ${TEAMS_BOT_APP_ID:-}
+      TEAMS_BOT_APP_PASSWORD: ${TEAMS_BOT_APP_PASSWORD:-}
+      TEAMS_BOT_SECRET: ${TEAMS_BOT_SECRET:-}
+      # WhatsApp Cloud API (Meta). FAIL-CLOSED: webhook and outbound adapter are
+      # disabled unless credentials are set. Set in .env to go live; empty = mock.
+      # See infra/whatsapp-setup.md for the Meta app setup steps.
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      # Email watch / SLA escalation
+      WATCH_OWNER_EMAIL: ${WATCH_OWNER_EMAIL:-deniz@dynamicsops.com}
+      EMAIL_WATCH_ENABLED: ${EMAIL_WATCH_ENABLED:-true}
+      EMAIL_WATCH_SLA_HOURS: ${EMAIL_WATCH_SLA_HOURS:-48}
+      WATCH_TEAM_DOMAIN: ${WATCH_TEAM_DOMAIN:-dynamicsops.com}
+      EMAIL_WATCH_TICK_MS: ${EMAIL_WATCH_TICK_MS:-1800000}
     volumes:
       - ${OBSIDIAN_VAULT_HOST_PATH:-./infra/empty-vault}:/vault:ro
     ports:
@@ -110,6 +130,11 @@ services:
       DAILY_BRIEF: "true"
       ENABLE_PROACTIVE: "true"
       PROACTIVE_TICK_MS: "300000"
+      # Email watch / SLA escalation
+      WATCH_OWNER_EMAIL: ${WATCH_OWNER_EMAIL:-deniz@dynamicsops.com}
+      EMAIL_WATCH_ENABLED: ${EMAIL_WATCH_ENABLED:-true}
+      EMAIL_WATCH_SLA_HOURS: ${EMAIL_WATCH_SLA_HOURS:-48}
+      WATCH_TEAM_DOMAIN: ${WATCH_TEAM_DOMAIN:-dynamicsops.com}
     depends_on:
       api:
         condition: service_started

@@ -16,6 +16,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.controller';
 import { KnowledgeModule } from './modules/knowledge/knowledge.controller';
 import { IntegrationsModule } from './integrations/integrations.controller';
 import { IngestionModule } from './integrations/ingestion.poller';
+import { EmailWatchModule } from './integrations/email-watch.service';
 import { WorkspacesModule } from './modules/workspaces/workspaces.controller';
 import { BacktestModule } from './modules/backtest/backtest.controller';
 import { NotificationsModule } from './modules/notifications/notifications.controller';
@@ -23,6 +24,12 @@ import { TemplatesModule } from './modules/templates/templates.controller';
 import { ProposalMiningModule } from './modules/proposal-mining/proposal-mining.controller';
 import { StreamModule } from './modules/stream/stream.controller';
 import { AutomationsModule } from './modules/automations/automations.controller';
+import { MissionsModule } from './modules/missions/missions.controller';
+import { PerformanceModule } from './modules/performance/performance.controller';
+import { AnalystModule } from './modules/analyst/analyst.controller';
+import { SkillsModule } from './modules/skills/skills.controller';
+import { TeamsModule } from './modules/teams/teams.controller';
+import { WhatsAppModule } from './modules/whatsapp/whatsapp.controller';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -41,6 +48,7 @@ import { HealthController } from './health.controller';
     KnowledgeModule,
     IntegrationsModule,
     IngestionModule,
+    EmailWatchModule,
     WorkspacesModule,
     BacktestModule,
     NotificationsModule,
@@ -48,6 +56,12 @@ import { HealthController } from './health.controller';
     ProposalMiningModule,
     StreamModule,
     AutomationsModule,
+    MissionsModule,
+    PerformanceModule,
+    AnalystModule,
+    SkillsModule,
+    TeamsModule,
+    WhatsAppModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],

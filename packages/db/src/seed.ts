@@ -55,10 +55,24 @@ async function main() {
   const defaultEmail = (def: { key: string; email?: string }) =>
     def.email ?? `${def.key.replace(/^ai_/, '').replace(/_/g, '.')}@dynamicsops.com`;
   const resourceByKey: Record<string, string> = {};
+  // 2a: reviewer_key mappings for peer-review gate
+  const REVIEWER_MAP: Record<string, string> = {
+    ai_proposal_manager: 'ai_solution_architect',
+    ai_finance_manager: 'ai_accountant',
+  };
+
   for (const def of ALL_RESOURCE_DEFS) {
     const existing = await prisma.ai_resources.findUnique({ where: { key: def.key } });
     const existingConfig = (existing?.config as Record<string, unknown> | null) ?? {};
-    const config = { ...existingConfig, category: def.category ?? 'operational', skill: def.skill ?? def.key };
+    const reviewerKey = REVIEWER_MAP[def.key];
+    const config = {
+      ...existingConfig,
+      category: def.category ?? 'operational',
+      skill: def.skill ?? def.key,
+      ...(reviewerKey ? { reviewer_key: reviewerKey } : {}),
+    };
+    // 2c: ensure `remember` is in every resource's allowed_tools (deduped)
+    const toolsWithRemember = Array.from(new Set([...def.tools, 'remember'])) as unknown as Prisma.InputJsonValue;
     const r = await prisma.ai_resources.upsert({
       where: { key: def.key },
       // NOTE: llm_provider / llm_model / email are intentionally NOT in `update` so
@@ -68,7 +82,7 @@ async function main() {
         role: def.role,
         description: def.description,
         system_prompt: def.systemPrompt,
-        allowed_tools: def.tools as unknown as Prisma.InputJsonValue,
+        allowed_tools: toolsWithRemember,
         temperature: new Prisma.Decimal(def.temperature),
         confidence_threshold: new Prisma.Decimal(def.confidenceThreshold),
         approval_limit: def.approvalLimit === null ? null : new Prisma.Decimal(def.approvalLimit),
@@ -86,7 +100,7 @@ async function main() {
         llm_provider: def.provider,
         llm_model: def.model,
         temperature: new Prisma.Decimal(def.temperature),
-        allowed_tools: def.tools as unknown as Prisma.InputJsonValue,
+        allowed_tools: toolsWithRemember,
         config: config as Prisma.InputJsonValue,
         confidence_threshold: new Prisma.Decimal(def.confidenceThreshold),
         approval_limit: def.approvalLimit === null ? null : new Prisma.Decimal(def.approvalLimit),
@@ -139,6 +153,7 @@ async function main() {
     { type: 'github', name: 'GitHub: dynamicsops/DynOpsBC (mock)', direction: 'both', config: { repo: 'dynamicsops/DynOpsBC' } },
     { type: 'business_central', name: 'BC: Dynamics Ops Bilgi Tek Ltd Sti (mock)', direction: 'both', config: { tenant: '7fa2357e-26f2-4174-8e16-a713981356b8', environment: 'Production', company: 'Dynamics Ops Bilgi Tek Ltd Sti' } },
     { type: 'business_central', name: 'BC: Dynamics Ops (mock)', direction: 'both', config: { tenant: '7fa2357e-26f2-4174-8e16-a713981356b8', environment: 'Production', company: 'Dynamics Ops' } },
+    { type: 'whatsapp', name: 'WhatsApp Business (mock)', direction: 'both', config: { phone: '+1000000000' } },
   ];
   const integrationByName: Record<string, string> = {};
   for (const i of integrations) {
@@ -265,8 +280,10 @@ async function main() {
       condition: { any: [{ field: 'agent_result.needs_escalation', op: 'eq', value: true }] }, action_config: { reason: 'low_confidence_or_escalation', assignee_role: 'manager' } },
     { id: 'f0000000-0000-0000-0000-000000000095', name: 'Sensitive tool → approval', phase: 'post_agent', priority: 95, action_type: 'escalate', stop_on_match: false,
       condition: { any: [{ field: 'agent_result.has_sensitive_tool', op: 'eq', value: true }] }, action_config: { reason: 'sensitive_action', assignee_role: 'manager' } },
+    { id: 'f0000000-0000-0000-0000-000000000026', name: 'WhatsApp → Support Agent', phase: 'pre_agent', priority: 26, action_type: 'route_to_resource', target: 'ai_support_agent',
+      condition: { all: [{ field: 'channel', op: 'eq', value: 'whatsapp' }] } },
     { id: 'f0000000-0000-0000-0000-000000001000', name: 'Default → Executive Assistant', phase: 'pre_agent', priority: 1000, action_type: 'route_to_resource', target: 'ai_executive_assistant',
-      condition: { any: [{ field: 'channel', op: 'eq', value: 'email' }, { field: 'channel', op: 'eq', value: 'teams' }, { field: 'channel', op: 'eq', value: 'manual' }] } },
+      condition: { any: [{ field: 'channel', op: 'eq', value: 'email' }, { field: 'channel', op: 'eq', value: 'teams' }, { field: 'channel', op: 'eq', value: 'manual' }, { field: 'channel', op: 'eq', value: 'whatsapp' }] } },
   ];
 
   // ── Keyword routing for EVERY consulting + business resource ──────────────
@@ -340,12 +357,61 @@ async function main() {
     });
   }
 
+  // ── Skills registry (P4b) ─────────────────────────────────────────────────
+  const skillDefs = [
+    {
+      key: 'turkish-tax-compliance',
+      name: 'Turkish Tax Compliance',
+      description: 'Enforces KDV, e-fatura, and e-defter compliance in all financial outputs.',
+      prompt_fragment: '## TURKISH TAX COMPLIANCE\nAll financial documents must comply with Turkish tax law.\n- KDV (VAT) rates: apply 20% standard, 10% reduced, or 1% super-reduced as applicable.\n- e-fatura: documents require GIB-compliant e-Invoice format for B2B above threshold.\n- e-defter: monthly ledger must be submitted to GIB via e-Defter portal.\n- Always include VKN/TCKN, invoice serial/sequence, and GIB UUID in outputs.\n- Flag any non-compliant draft for human review before sending.',
+      tools: [],
+    },
+    {
+      key: 'executive-brevity',
+      name: 'Executive Brevity',
+      description: 'Leads every response with a 2-sentence executive summary; bullets the rest.',
+      prompt_fragment: '## EXECUTIVE BREVITY\nLead with a 2-sentence executive summary that captures the key finding and recommended action. Bullet the remaining points — no paragraphs, no preamble, no filler.',
+      tools: [],
+    },
+  ];
+  for (const s of skillDefs) {
+    await (prisma as any).skills.upsert({
+      where: { key: s.key },
+      update: { name: s.name, description: s.description, prompt_fragment: s.prompt_fragment, tools: s.tools as Prisma.InputJsonValue },
+      create: {
+        workspace_id: WS_ID,
+        key: s.key,
+        name: s.name,
+        description: s.description,
+        prompt_fragment: s.prompt_fragment,
+        tools: s.tools as Prisma.InputJsonValue,
+        is_active: true,
+        version: 1,
+        created_by: manager.id,
+      },
+    });
+  }
+
+  // Attach executive-brevity to ai_executive_assistant (merge into config without clobbering other keys).
+  const execAsst = await prisma.ai_resources.findUnique({ where: { key: 'ai_executive_assistant' } });
+  if (execAsst) {
+    const cfg = (execAsst.config as Record<string, unknown>) ?? {};
+    const existingSkills: string[] = Array.isArray((cfg as any).skills) ? (cfg as any).skills : [];
+    if (!existingSkills.includes('executive-brevity')) {
+      await prisma.ai_resources.update({
+        where: { key: 'ai_executive_assistant' },
+        data: { config: { ...cfg, skills: [...existingSkills, 'executive-brevity'] } as Prisma.InputJsonValue },
+      });
+    }
+  }
+
   // ── Backfill workspace_id on all tenant rows (idempotent) ───────────────
   const TENANT_TABLES = [
     'ai_resources', 'activity_sources', 'activities', 'customers', 'projects',
     'workflows', 'workflow_rules', 'agent_runs', 'tool_calls', 'approvals',
     'tasks', 'messages', 'documents', 'knowledge_chunks', 'integrations', 'audit_logs',
     'prompt_versions', 'notifications', 'templates', 'digest_results', 'automations',
+    'resource_memories', 'skills',
   ];
   // audit_logs is append-only (trigger blocks UPDATE) — drop it for the backfill;
   // the API recreates the trigger on boot (which starts after this seed).

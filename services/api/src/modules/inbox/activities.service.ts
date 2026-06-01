@@ -90,7 +90,7 @@ export class ActivitiesService {
   }
 
   // Generic ingestion (mock email/Teams/OpsConnect/DevOps/GitHub/BC). Idempotent by (source_id, external_id).
-  async ingest(input: { source_id?: string; channel: ActivityChannel; external_id?: string; from?: string; subject?: string; body?: string; customer_id?: string; project_id?: string; category?: string }) {
+  async ingest(input: { source_id?: string; channel: ActivityChannel; external_id?: string; from?: string; subject?: string; body?: string; customer_id?: string; project_id?: string; category?: string; to?: string[]; cc?: string[]; conversation_id?: string }) {
     if (input.source_id && input.external_id) {
       const existing = await this.prisma.activities.findFirst({ where: { source_id: input.source_id, external_id: input.external_id } });
       if (existing) return { activityId: existing.id, deduped: true };
@@ -113,7 +113,7 @@ export class ActivitiesService {
         customer_id: customerId,
         project_id: input.project_id,
         status: 'new',
-        metadata: { from: input.from },
+        metadata: { from: input.from, to: input.to ?? [], cc: input.cc ?? [], conversation_id: input.conversation_id ?? null },
       },
     });
     if (input.from || input.body) {

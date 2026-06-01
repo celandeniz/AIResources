@@ -44,6 +44,12 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
     },
   });
   if (!res.ok) {
+    // Expired/invalid session → self-heal instead of silently rendering blank
+    // pages: clear the stale token and bounce to login (avoid a redirect loop).
+    if (res.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      logout();
+      window.location.href = '/login';
+    }
     const text = await res.text();
     throw new Error(`${res.status}: ${text}`);
   }

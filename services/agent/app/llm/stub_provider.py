@@ -59,6 +59,38 @@ class StubProvider:
             sender = req.context.thread[0].from_
         sender = sender or "client@" + ((activity.customer.name if activity.customer else "customer").lower().replace(" ", "") + ".com")
 
+        # ── Peer-review branch (2a): triggered when reviewer is asked to critique a draft
+        if "REVIEW THE FOLLOWING DRAFT" in body:
+            # Approve non-trivial drafts (body > 200 chars past the instruction preamble)
+            # The body contains the DRAFT section after the preamble (~150 chars).
+            draft_section = body.split("DRAFT:", 1)[-1].strip() if "DRAFT:" in body else ""
+            is_trivial = len(draft_section) <= 200
+            verdict_word = "revise" if is_trivial else "approve"
+            review_confidence = 0.55 if is_trivial else 0.8
+            critique = (
+                f"- The draft addresses the main subject adequately.\n"
+                f"- Tone is professional and aligned with DynamicsOps standards.\n"
+                f"- {('Recommend expanding with specific customer context.' if is_trivial else 'No major structural issues found.')}\n"
+                f"Verdict: {verdict_word}."
+            )
+            return (
+                {
+                    "draft": {
+                        "kind": "note",
+                        "subject": None,
+                        "content": critique,
+                        "recipients": [],
+                        "citations": [],
+                    },
+                    "reasoning_summary": f"Peer review complete. Verdict: {verdict_word}. Quality score: {review_confidence}.",
+                    "confidence": review_confidence,
+                    "needs_escalation": False,
+                    "escalate_to": None,
+                    "tool_intents": [],
+                },
+                {"input": 0, "output": 0, "stub": True, "requested_provider": self.requested, "review": True},
+            )
+
         # ── Proactive automation runs: emit deliverable + create tasks + hand
         #    off to partner departments so the org self-coordinates even with
         #    zero LLM keys. Triggered by the proactive activity body. ─────────
@@ -121,7 +153,9 @@ class StubProvider:
                 f"and propose the following next step. I'll confirm the details and follow up shortly.\n\nBest regards,\nDynamicsOps"
             )
             reasoning = "Triaged inbound email; the intent is clear and routine. Drafting a reply and proposing a calendar update."
-            if "send_email" in tools:
+            if getattr(activity, "channel", "") == "whatsapp" and "send_whatsapp_message" in tools:
+                intents.append({"tool": "send_whatsapp_message", "sensitive": True, "args": {"body": draft_content}, "rationale": "Reply on WhatsApp."})
+            elif "send_email" in tools:
                 intents.append({"tool": "send_email", "sensitive": True, "args": {"to": recipients, "subject": draft_subject, "body": draft_content}, "rationale": "Reply to the sender."})
             if "update_calendar_event" in tools and ("call" in body.lower() or "meeting" in body.lower() or "move" in body.lower()):
                 intents.append({"tool": "update_calendar_event", "sensitive": True, "args": {"title": subject, "note": "rescheduled per request"}, "rationale": "Apply the requested reschedule."})
@@ -224,7 +258,10 @@ class StubProvider:
             confidence = 0.7
             if "create_ticket" in tools:
                 intents.append({"tool": "create_ticket", "sensitive": False, "args": {"subject": subject, "severity": "medium"}, "rationale": "Track the support request."})
-            if "send_email" in tools:
+            # Reply on the channel the request arrived on.
+            if getattr(activity, "channel", "") == "whatsapp" and "send_whatsapp_message" in tools:
+                intents.append({"tool": "send_whatsapp_message", "sensitive": True, "args": {"body": draft_content}, "rationale": "Reply to the customer on WhatsApp."})
+            elif "send_email" in tools:
                 intents.append({"tool": "send_email", "sensitive": True, "args": {"to": recipients, "subject": draft_subject, "body": draft_content}, "rationale": "Reply with the solution."})
 
         elif key == "ai_finance_assistant":
@@ -255,6 +292,50 @@ class StubProvider:
             confidence = 0.8 if rag_hits else 0.55
             escalate = not rag_hits
 
+        elif key == "ai_data_analyst":
+            draft_kind = "note"
+            body_lower = body.lower()
+            # Pick the most relevant report from the catalog based on keywords.
+            if "approval" in body_lower:
+                report_key = "approvals_by_status"
+                chart_title = "Approvals by Status"
+            elif "mission" in body_lower:
+                report_key = "missions_overview"
+                chart_title = "Missions Overview"
+            elif "task" in body_lower:
+                report_key = "tasks_by_status"
+                chart_title = "Tasks by Status"
+            elif "proactive" in body_lower:
+                report_key = "proactive_by_resource"
+                chart_title = "Proactive Activities by Resource"
+            elif any(kw in body_lower for kw in ("resource", "who", "which resource", "per resource")):
+                report_key = "activities_by_resource"
+                chart_title = "Activities by Resource"
+            else:
+                report_key = "activities_by_status"
+                chart_title = "Activities by Status"
+            draft_content = (
+                f"# Analytics: {subject}\n\n"
+                f"I selected the **{report_key}** report from the catalog as the best match for your question.\n\n"
+                f"The chart below shows {chart_title.lower()}. Review the data and let me know if you need a different breakdown."
+            )
+            reasoning = f"Picked report '{report_key}' based on question keywords; emitting run_report and make_chart intents."
+            confidence = 0.82
+            if "run_report" in tools:
+                intents.append({
+                    "tool": "run_report",
+                    "sensitive": False,
+                    "args": {"report": report_key},
+                    "rationale": f"Execute the '{report_key}' report from the safe catalog.",
+                })
+            if "make_chart" in tools:
+                intents.append({
+                    "tool": "make_chart",
+                    "sensitive": False,
+                    "args": {"type": "bar", "title": chart_title},
+                    "rationale": "Render the report data as a bar chart.",
+                })
+
         else:
             role = getattr(resource, "name", key.replace("_", " "))
             draft_kind = "note"
@@ -282,6 +363,16 @@ class StubProvider:
                     "args": {"title": draft_subject, "kind": "consulting_note", "content": draft_content},
                     "rationale": "Persist the client-ready consulting draft.",
                 })
+
+        # 2c: Emit a `remember` intent with a one-line learning in the generic/consulting path
+        if "remember" in tools and draft_content and not escalate:
+            learning = f"{subject[:120]}: {reasoning[:160]}"
+            intents.append({
+                "tool": "remember",
+                "sensitive": False,
+                "args": {"content": learning, "scope": "general"},
+                "rationale": "Persist key learning for future runs.",
+            })
 
         # Honor the resource's allowed tools (defense-in-depth; Node re-validates too).
         intents = [i for i in intents if i["tool"] in tools]

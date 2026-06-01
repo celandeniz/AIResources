@@ -31,6 +31,8 @@ class MockAdapter implements ConnectorAdapter {
         return { ok: true, external_id: externalId, detail: `GitHub ${tool} on "${conn.config.repo}"`, data: { repo: conn.config.repo } };
       case 'opsconnect':
         return { ok: true, external_id: externalId, detail: `OpsConnect ${tool}`, data: { base_url: conn.config.base_url } };
+      case 'whatsapp':
+        return { ok: true, external_id: `wa-mock-${Math.round(performance.now())}`, detail: `WhatsApp (mock) send_whatsapp_message to ${String(args.to ?? '?')}`, data: { simulated: true, to: args.to, body: args.body ?? args.message ?? args.content } };
       default:
         return { ok: true, external_id: externalId, detail: `${this.kind} ${tool} simulated` };
     }
@@ -46,6 +48,7 @@ const ADAPTERS: Record<IntegrationKind, ConnectorAdapter> = {
   opsconnect: new MockAdapter('opsconnect'),
   business_central: new MockAdapter('business_central'),
   crm: new MockAdapter('crm'),
+  whatsapp: new MockAdapter('whatsapp'),
   internal: new MockAdapter('internal'),
 };
 

@@ -20,6 +20,7 @@ enum user_role {
 
 enum activity_status {
   new
+  watching
   triaging
   routed
   in_progress
@@ -52,6 +53,8 @@ enum activity_channel {
   document
   manual
   proactive
+  mission
+  whatsapp
 }
 
 enum approval_status {
@@ -107,6 +110,7 @@ enum integration_type {
   graph_teams
   sharepoint
   crm
+  whatsapp
 }
 
 enum integration_status {
@@ -242,6 +246,9 @@ model ai_resources {
   tasks              tasks[]          @relation("task_resource")
   prompt_versions    prompt_versions[]
   automations        automations[]    @relation("automation_resource")
+  led_missions       missions[]       @relation("mission_lead")
+  sent_messages      agent_messages[] @relation("message_from")
+  memories           resource_memories[] @relation("resource_memory")
 
   @@index([status])
   @@index([key])
@@ -555,6 +562,9 @@ model tasks {
   id                   String      @id @default(uuid()) @db.Uuid
   activity_id          String?     @db.Uuid
   project_id           String?     @db.Uuid
+  mission_id           String?     @db.Uuid
+  depends_on           Json        @default("[]") // task ids that must be `done` first
+  sequence             Int         @default(0)
   title                String      @db.VarChar(300)
   description          String?     @db.Text
   status               task_status @default(open)
@@ -570,15 +580,62 @@ model tasks {
 
   activity          activities?   @relation(fields: [activity_id], references: [id], onDelete: SetNull)
   project           projects?     @relation(fields: [project_id], references: [id], onDelete: SetNull)
+  mission           missions?     @relation(fields: [mission_id], references: [id], onDelete: Cascade)
   assignee_user     users?        @relation("task_assignee", fields: [assignee_user_id], references: [id], onDelete: SetNull)
   assignee_resource ai_resources? @relation("task_resource", fields: [assignee_resource_id], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([activity_id])
   @@index([project_id])
+  @@index([mission_id])
   @@index([assignee_user_id])
   @@index([workspace_id])
   @@map("tasks")
+}
+
+// ── Mission Pods: goal-driven multi-agent teams ───────────────────────────────
+// A mission decomposes a business goal into a dependency-aware task graph executed
+// by the right AI Resources, coordinating via handoff + agent_messages, tracked on
+// a live board. Draft-first preserved: tasks run through the normal activity gate.
+model missions {
+  workspace_id     String   @db.Uuid
+  id               String   @id @default(uuid()) @db.Uuid
+  title            String   @db.VarChar(240)
+  goal             String   @db.Text
+  status           String   @default("planning") @db.VarChar(20) // planning|running|blocked|done|failed
+  lead_resource_id String?  @db.Uuid
+  summary          Json     @default("{}")
+  created_by       String?  @db.Uuid
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @updatedAt @db.Timestamptz(6)
+
+  lead_resource ai_resources?    @relation("mission_lead", fields: [lead_resource_id], references: [id], onDelete: SetNull)
+  tasks         tasks[]
+  messages      agent_messages[]
+
+  @@index([workspace_id])
+  @@index([status])
+  @@map("missions")
+}
+
+// Lightweight inter-agent + agent→human messaging / blackboard for a mission.
+model agent_messages {
+  workspace_id     String?  @db.Uuid
+  id               String   @id @default(uuid()) @db.Uuid
+  mission_id       String?  @db.Uuid
+  from_resource_id String?  @db.Uuid
+  to_resource_id   String?  @db.Uuid // null = broadcast
+  kind             String   @default("message") @db.VarChar(20) // message|plan|status
+  body             String   @db.Text
+  metadata         Json     @default("{}")
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  mission       missions?     @relation(fields: [mission_id], references: [id], onDelete: Cascade)
+  from_resource ai_resources? @relation("message_from", fields: [from_resource_id], references: [id], onDelete: SetNull)
+
+  @@index([workspace_id])
+  @@index([mission_id])
+  @@map("agent_messages")
 }
 
 model messages {
@@ -915,4 +972,45 @@ model memberships {
   @@unique([workspace_id, user_id])
   @@index([user_id])
   @@map("memberships")
+}
+
+// ── Composable, versioned skill units (P4b) ───────────────────────────────────
+// Attached to resources via ai_resources.config.skills (array of skill keys).
+// At run time the worker appends prompt_fragment and unions tools into the request.
+model skills {
+  workspace_id    String?  @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
+  key             String   @unique @db.VarChar(80)
+  name            String   @db.VarChar(160)
+  description     String?  @db.Text
+  prompt_fragment String   @db.Text
+  tools           Json     @default("[]")
+  version         Int      @default(1)
+  is_active       Boolean  @default(true)
+  created_by      String?  @db.Uuid
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@map("skills")
+}
+
+// ── Long-term per-resource memory (2c) ────────────────────────────────────────
+// Durable notes saved by resources via the `remember` tool intent.  Injected
+// back into rag_hits on subsequent runs so resources accumulate context over time.
+model resource_memories {
+  workspace_id       String?  @db.Uuid
+  id                 String   @id @default(uuid()) @db.Uuid
+  resource_id        String   @db.Uuid
+  customer_id        String?  @db.Uuid
+  scope              String   @default("general") @db.VarChar(40)
+  content            String   @db.Text
+  source_activity_id String?  @db.Uuid
+  created_at         DateTime @default(now()) @db.Timestamptz(6)
+
+  resource ai_resources @relation("resource_memory", fields: [resource_id], references: [id], onDelete: Cascade)
+
+  @@index([resource_id])
+  @@index([workspace_id])
+  @@map("resource_memories")
 }

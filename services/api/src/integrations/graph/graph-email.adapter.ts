@@ -63,7 +63,7 @@ export class GraphEmailAdapter implements ConnectorAdapter {
     const url =
       `/users/${encodeURIComponent(mailbox)}/mailFolders/inbox/messages` +
       `?$filter=${filter}&$orderby=receivedDateTime%20desc&$top=25` +
-      `&$select=subject,bodyPreview,from,receivedDateTime,internetMessageId`;
+      `&$select=subject,bodyPreview,from,toRecipients,ccRecipients,conversationId,receivedDateTime,internetMessageId`;
     const page = await graphFetch(url);
     const messages: GraphMail[] = [];
     let watermark = since;
@@ -75,6 +75,9 @@ export class GraphEmailAdapter implements ConnectorAdapter {
         bodyPreview: m.bodyPreview,
         from: m.from?.emailAddress?.address,
         receivedDateTime: m.receivedDateTime,
+        to: (m.toRecipients ?? []).map((r: any) => r.emailAddress?.address?.toLowerCase()).filter(Boolean),
+        cc: (m.ccRecipients ?? []).map((r: any) => r.emailAddress?.address?.toLowerCase()).filter(Boolean),
+        conversationId: m.conversationId,
       });
       if (m.receivedDateTime && m.receivedDateTime > watermark) watermark = m.receivedDateTime;
     }
@@ -105,6 +108,26 @@ export class GraphEmailAdapter implements ConnectorAdapter {
         if (out.length >= cap) break;
       }
       url = page['@odata.nextLink'];
+    }
+    return out;
+  }
+
+  // Fetch all messages in an Outlook conversation (thread) since a given ISO timestamp.
+  // Used by the email-watch service to determine if any team member replied.
+  async fetchConversationReplies(conn: ConnectionInfo, mailbox: string, conversationId: string, sinceISO: string): Promise<{ from: string; at: string }[]> {
+    const cid = conversationId.replace(/'/g, "''");
+    const url =
+      `/users/${encodeURIComponent(mailbox)}/messages` +
+      `?$filter=conversationId eq '${cid}'` +
+      `&$select=from,sentDateTime,receivedDateTime,internetMessageId&$top=50`;
+    const page = await graphFetch(url);
+    const out: { from: string; at: string }[] = [];
+    for (const m of page.value ?? []) {
+      const from = m.from?.emailAddress?.address?.toLowerCase();
+      const at = m.sentDateTime || m.receivedDateTime;
+      if (from && at && at > sinceISO) {
+        out.push({ from, at });
+      }
     }
     return out;
   }
@@ -161,6 +184,9 @@ export interface GraphMail {
   bodyPreview?: string;
   from?: string;
   receivedDateTime?: string;
+  to?: string[];
+  cc?: string[];
+  conversationId?: string;
 }
 
 export interface GraphSentMail {

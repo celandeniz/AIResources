@@ -20,5 +20,6 @@ export const TENANT_MODELS = new Set([
   'workflows', 'workflow_rules', 'agent_runs', 'tool_calls', 'approvals',
   'tasks', 'messages', 'documents', 'knowledge_chunks', 'integrations', 'audit_logs',
   'agent_feedback', 'backtests', 'backtest_items', 'prompt_versions', 'notifications',
-  'templates', 'digest_results', 'automations',
+  'templates', 'digest_results', 'automations', 'missions', 'agent_messages',
+  'resource_memories', 'skills',
 ]);
