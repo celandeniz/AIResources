@@ -411,7 +411,7 @@ async function main() {
     'workflows', 'workflow_rules', 'agent_runs', 'tool_calls', 'approvals',
     'tasks', 'messages', 'documents', 'knowledge_chunks', 'integrations', 'audit_logs',
     'prompt_versions', 'notifications', 'templates', 'digest_results', 'automations',
-    'resource_memories', 'skills',
+    'resource_memories', 'skills', 'reports',
   ];
   // audit_logs is append-only (trigger blocks UPDATE) — drop it for the backfill;
   // the API recreates the trigger on boot (which starts after this seed).

@@ -124,6 +124,23 @@ export class ExecutorService {
         if (tool === 'send_whatsapp_message') {
           await this.recordOutboundMessage(activityId, args, conn.name, 'whatsapp');
         }
+        // BC sales order: update the report to 'ordered' and store the BC ref
+        if (tool === 'bc_create_sales_order' && result?.ok && args.report_id) {
+          try {
+            await (this.prisma as any).reports.updateMany({
+              where: { id: args.report_id },
+              data: {
+                status: 'ordered',
+                bc_order: {
+                  external_id: result.external_id ?? null,
+                  company: args.company ?? null,
+                  detail: result.detail ?? null,
+                  ordered_at: new Date().toISOString(),
+                } as any,
+              },
+            });
+          } catch { /* non-critical */ }
+        }
         // attribute outbound connection for counting
         await this.prisma.tool_calls.update({ where: { id: toolCallId }, data: { target_integration_id: conn.id } });
       }

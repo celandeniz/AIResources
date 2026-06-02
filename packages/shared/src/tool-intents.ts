@@ -50,7 +50,8 @@ export type ToolName =
   | 'remember'
   | 'run_report'
   | 'make_chart'
-  | 'send_whatsapp_message';
+  | 'send_whatsapp_message'
+  | 'bc_create_sales_order';
 
 export type IntegrationKind =
   | 'email'
@@ -113,6 +114,7 @@ export const TOOL_REGISTRY: Record<ToolName, ToolDef> = {
   run_report: { name: 'run_report', sensitive: false, risk: 'low', targets: 'internal', description: 'Run a named report from the safe catalog and return rows.' },
   make_chart: { name: 'make_chart', sensitive: false, risk: 'low', targets: 'internal', description: 'Describe a chart (bar/donut/line) for the UI to render.' },
   send_whatsapp_message: { name: 'send_whatsapp_message', sensitive: true, risk: 'high', targets: 'whatsapp', description: 'Send a WhatsApp message to a customer (always approval).' },
+  bc_create_sales_order: { name: 'bc_create_sales_order', sensitive: true, risk: 'high', targets: 'business_central', monetary: true, description: 'Create a Business Central sales order (always approval).' },
 };
 
 // Tools that ALWAYS require human approval regardless of confidence/limit.

@@ -30,6 +30,7 @@ import { AnalystModule } from './modules/analyst/analyst.controller';
 import { SkillsModule } from './modules/skills/skills.controller';
 import { TeamsModule } from './modules/teams/teams.controller';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.controller';
+import { ReportsModule } from './modules/reports/reports.controller';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -62,6 +63,7 @@ import { HealthController } from './health.controller';
     SkillsModule,
     TeamsModule,
     WhatsAppModule,
+    ReportsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],

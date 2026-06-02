@@ -104,6 +104,12 @@ services:
       EMAIL_WATCH_SLA_HOURS: ${EMAIL_WATCH_SLA_HOURS:-48}
       WATCH_TEAM_DOMAIN: ${WATCH_TEAM_DOMAIN:-dynamicsops.com}
       EMAIL_WATCH_TICK_MS: ${EMAIL_WATCH_TICK_MS:-1800000}
+      # Azure Cosmos DB — Time Log / Work Reports (read-only key; empty = mock mode)
+      COSMOS_ENDPOINT: ${COSMOS_ENDPOINT:-}
+      COSMOS_READONLY_KEY: ${COSMOS_READONLY_KEY:-}
+      COSMOS_KEY: ${COSMOS_KEY:-}
+      COSMOS_CONNECTION_STRING: ${COSMOS_CONNECTION_STRING:-}
+      COSMOS_DB: ${COSMOS_DB:-DynOpsCore}
     volumes:
       - ${OBSIDIAN_VAULT_HOST_PATH:-./infra/empty-vault}:/vault:ro
     ports:
