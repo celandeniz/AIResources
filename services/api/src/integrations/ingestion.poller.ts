@@ -93,6 +93,7 @@ export class IngestionPoller implements OnModuleInit, OnModuleDestroy {
         to: m.to,
         cc: m.cc,
         conversation_id: m.conversationId,
+        headers: m.headers,
       });
     }
     await this.prisma.integrations.update({

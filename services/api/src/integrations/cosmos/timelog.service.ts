@@ -48,6 +48,10 @@ export const COSMOS_MAP = {
     STATE: 'state',
     ASSIGNEE: 'assigned_to_name',
     WORK_ITEM_ID: 'ado_id',
+    PRIORITY: 'priority',
+    UPDATED_AT: 'updated_at',
+    CHANGED_AT: 'changed_at',
+    CREATED_AT: 'created_at',
     PROJECT: 'project_name',
     ORG: 'org_name',
     CUSTOMER_ID: 'customer_id',
@@ -111,6 +115,11 @@ export interface CosmosTask {
   type?: string;
   state?: string;
   assignee?: string;
+  priority?: number;
+  workItemType?: string;
+  updatedAt?: string;
+  changedAt?: string;
+  createdAt?: string;
   project: string;
   org?: string;
   customerId?: string;
@@ -144,14 +153,14 @@ const MOCK_TIME_LOGS: CosmosTimelog[] = [
 ];
 
 const MOCK_TASKS: CosmosTask[] = [
-  { workItemId: '101', title: 'Portal login screen', originalEstimate: 8, completedWork: 6.5, logged: 6.5, type: 'Task', state: 'Done', assignee: 'Deniz Celan', project: 'Aga Digital' },
-  { workItemId: '102', title: 'API gateway setup', originalEstimate: 4, completedWork: 2, logged: 2, type: 'Task', state: 'Done', assignee: 'Deniz Celan', project: 'Aga Digital' },
-  { workItemId: '103', title: 'Database schema design', originalEstimate: 6, completedWork: 4, logged: 4, type: 'Task', state: 'Done', assignee: 'Ali Yilmaz', project: 'Aga Digital' },
-  { workItemId: '104', title: 'CI/CD pipeline', originalEstimate: 4, completedWork: 2.5, logged: 2.5, type: 'Task', state: 'Done', assignee: 'Deniz Celan', project: 'AgaOne Dubai' },
-  { workItemId: '105', title: 'Mobile app screens', originalEstimate: 8, completedWork: 5, logged: 5, type: 'Feature', state: 'In Progress', assignee: 'Ali Yilmaz', project: 'AgaOne Dubai' },
-  { workItemId: '108', title: 'BC integration', originalEstimate: 10, completedWork: 7, logged: 7, type: 'Feature', state: 'Done', assignee: 'Ali Yilmaz', project: 'DynOps Connect' },
-  { workItemId: '109', title: 'Report generation', originalEstimate: 6, completedWork: 5, logged: 5, type: 'Task', state: 'Done', assignee: 'Deniz Celan', project: 'DynOps Connect' },
-  { workItemId: '110', title: 'Data migration', originalEstimate: 8, completedWork: 6, logged: 6, type: 'Task', state: 'Done', assignee: 'Ali Yilmaz', project: 'Aga Digital' },
+  { workItemId: '101', title: 'Portal login screen', originalEstimate: 8, completedWork: 6.5, logged: 6.5, type: 'Task', state: 'Done', assignee: 'Deniz Celan', priority: 2, workItemType: 'Task', updatedAt: '2026-04-20T10:00:00Z', changedAt: '2026-04-20T10:00:00Z', createdAt: '2026-04-01T09:00:00Z', project: 'Aga Digital' },
+  { workItemId: '102', title: 'API gateway setup', originalEstimate: 4, completedWork: 2, logged: 2, type: 'Task', state: 'Done', assignee: 'Deniz Celan', priority: 2, workItemType: 'Task', updatedAt: '2026-04-21T10:00:00Z', changedAt: '2026-04-21T10:00:00Z', createdAt: '2026-04-02T09:00:00Z', project: 'Aga Digital' },
+  { workItemId: '103', title: 'Database schema design', originalEstimate: 6, completedWork: 4, logged: 4, type: 'Task', state: 'Done', assignee: 'Ali Yilmaz', priority: 1, workItemType: 'Task', updatedAt: '2026-04-22T10:00:00Z', changedAt: '2026-04-22T10:00:00Z', createdAt: '2026-04-03T09:00:00Z', project: 'Aga Digital' },
+  { workItemId: '104', title: 'CI/CD pipeline', originalEstimate: 4, completedWork: 2.5, logged: 2.5, type: 'Task', state: 'Done', assignee: 'Deniz Celan', priority: 3, workItemType: 'Task', updatedAt: '2026-04-23T10:00:00Z', changedAt: '2026-04-23T10:00:00Z', createdAt: '2026-04-04T09:00:00Z', project: 'AgaOne Dubai' },
+  { workItemId: '105', title: 'Mobile app screens', originalEstimate: 8, completedWork: 5, logged: 5, type: 'Feature', state: 'In Progress', assignee: 'Ali Yilmaz', priority: 1, workItemType: 'Feature', updatedAt: '2026-04-28T10:00:00Z', changedAt: '2026-04-28T10:00:00Z', createdAt: '2026-04-05T09:00:00Z', project: 'AgaOne Dubai' },
+  { workItemId: '108', title: 'BC integration', originalEstimate: 10, completedWork: 7, logged: 7, type: 'Feature', state: 'Done', assignee: 'Ali Yilmaz', priority: 1, workItemType: 'Feature', updatedAt: '2026-04-29T10:00:00Z', changedAt: '2026-04-29T10:00:00Z', createdAt: '2026-04-06T09:00:00Z', project: 'DynOps Connect' },
+  { workItemId: '109', title: 'Report generation', originalEstimate: 6, completedWork: 5, logged: 5, type: 'Task', state: 'Done', assignee: 'Deniz Celan', priority: 2, workItemType: 'Task', updatedAt: '2026-04-30T10:00:00Z', changedAt: '2026-04-30T10:00:00Z', createdAt: '2026-04-07T09:00:00Z', project: 'DynOps Connect' },
+  { workItemId: '110', title: 'Data migration', originalEstimate: 8, completedWork: 6, logged: 6, type: 'Task', state: 'In Progress', assignee: 'Ali Yilmaz', priority: 2, workItemType: 'Task', updatedAt: '2026-04-30T10:00:00Z', changedAt: '2026-04-30T10:00:00Z', createdAt: '2026-04-08T09:00:00Z', project: 'Aga Digital' },
 ];
 
 const MOCK_USERS: Record<string, string> = {
@@ -187,6 +196,31 @@ export class CosmosTimelogService {
   private container(name: string) {
     if (!this.client) throw new Error('Cosmos client not initialised');
     return this.client.database(this.dbName).container(name);
+  }
+
+  // ── healthCheck ─────────────────────────────────────────────────────────────
+  // Live probe used by the Integrations registry "Test" action.
+  async healthCheck(): Promise<{ ok: boolean; detail: string }> {
+    if (this.mockMode) {
+      return { ok: true, detail: 'Mock mode (no COSMOS_ENDPOINT/key set) — sample data served.' };
+    }
+    try {
+      const orgs = await this.listOrganizations();
+      const C = COSMOS_MAP.TIME_LOG;
+      const { resources } = await this.container(COSMOS_MAP.CONTAINERS.TIME_LOGS).items
+        .query({
+          query: `SELECT VALUE COUNT(1) FROM c WHERE c.${C.DOCUMENT_TYPE} = @dt`,
+          parameters: [{ name: '@dt', value: C.DOCUMENT_TYPE_VALUE }],
+        })
+        .fetchAll();
+      const logCount = Array.isArray(resources) ? Number(resources[0] ?? 0) : 0;
+      return {
+        ok: true,
+        detail: `Connected to ${this.dbName} · ${orgs.length} organizations · ${logCount} time-log records.`,
+      };
+    } catch (e: any) {
+      return { ok: false, detail: `Cosmos query failed: ${e?.message ?? String(e)}` };
+    }
   }
 
   // ── listOrganizations ──────────────────────────────────────────────────────
@@ -359,10 +393,45 @@ export class CosmosTimelogService {
       type: r[C.TYPE] ?? undefined,
       state: r[C.STATE] ?? undefined,
       assignee: r[C.ASSIGNEE] ?? undefined,
+      priority: r[C.PRIORITY] != null ? Number(r[C.PRIORITY]) : undefined,
+      workItemType: r[C.TYPE] ?? undefined,
+      updatedAt: r[C.UPDATED_AT] ?? undefined,
+      changedAt: r[C.CHANGED_AT] ?? undefined,
+      createdAt: r[C.CREATED_AT] ?? undefined,
       project: String(r[C.PROJECT] ?? ''),
       org: r[C.ORG] ?? undefined,
       customerId: r[C.CUSTOMER_ID] ?? undefined,
     };
+  }
+
+  // ── fetchProjectTasks ──────────────────────────────────────────────────────
+  // DevOps work items for a single project (used by the project status report).
+  // Reuses mapTask + COSMOS_MAP. Mock mode returns MOCK_TASKS filtered by project.
+  async fetchProjectTasks(opts: { org: string; project: string }): Promise<CosmosTask[]> {
+    if (this.mockMode) {
+      return MOCK_TASKS.filter((t) => t.project === opts.project);
+    }
+    const C = COSMOS_MAP.DEVOPS_TASK;
+    const q = {
+      query: `SELECT * FROM c
+              WHERE c.${C.ORG} = @org
+                AND c.${C.DOC_TYPE} = @dt
+                AND c.${C.PROJECT} = @proj`,
+      parameters: [
+        { name: '@org', value: opts.org },
+        { name: '@dt', value: C.DOC_TYPE_VALUE },
+        { name: '@proj', value: opts.project },
+      ],
+    };
+    try {
+      const { resources } = await this.container(COSMOS_MAP.CONTAINERS.DEVOPS_TASKS).items
+        .query(q)
+        .fetchAll();
+      return (resources as any[]).map((r) => this.mapTask(r));
+    } catch (e) {
+      this.logger.error('fetchProjectTasks failed', e);
+      return [];
+    }
   }
 
   // ── resolveUserNames ───────────────────────────────────────────────────────

@@ -70,7 +70,11 @@ export class ExecutorService {
       const match = candidates.find((c) => (c.config as any)?.company === args.company);
       if (match) return this.toInfo(match);
     }
-    return this.toInfo(candidates[0]);
+    // Prefer a LIVE connection (is_mock=false) over a mock one — otherwise a
+    // real send/action can silently route to the mock adapter (findMany order
+    // is non-deterministic when both a mock and a live row exist for a type).
+    const live = candidates.find((c) => !c.is_mock);
+    return this.toInfo(live ?? candidates[0]);
   }
 
   private toInfo(row: any): ConnectionInfo {

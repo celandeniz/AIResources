@@ -5,6 +5,7 @@ import { runWeeklyDigest } from './weekly-digest';
 import { runDailyBrief } from './daily-brief';
 import { runProactive, tickProactiveScheduler } from './proactive';
 import { planAndStartMission, advanceMissionFromActivity } from './mission';
+import { runStyleRelearn } from './style-relearn';
 
 const ACTIVITY_QUEUE = 'activity.process';
 const BACKTEST_QUEUE = 'backtest.run';
@@ -93,10 +94,24 @@ if (process.env.ENABLE_PROACTIVE === 'true') {
   );
 }
 
+// Scheduled re-learn of the owner's reply style (default weekly). Re-harvests
+// sent mail + re-distills the style profile so drafts stay current with the
+// owner's evolving voice.
+let styleRelearnTimer: NodeJS.Timeout | undefined;
+if (process.env.ENABLE_STYLE_RELEARN !== 'false') {
+  const tickMs = Number(process.env.STYLE_RELEARN_TICK_MS ?? 7 * 24 * 60 * 60 * 1000); // weekly
+  styleRelearnTimer = setInterval(
+    () => runStyleRelearn().catch((e) => console.error('[style-relearn] failed:', e.message)),
+    tickMs,
+  );
+  console.log(`[style-relearn] scheduled every ${Math.round(tickMs / 3600000)}h`);
+}
+
 process.on('SIGTERM', async () => {
   if (digestTimer) clearInterval(digestTimer);
   if (dailyBriefTimer) clearInterval(dailyBriefTimer);
   if (proactiveTimer) clearInterval(proactiveTimer);
+  if (styleRelearnTimer) clearInterval(styleRelearnTimer);
   await worker.close();
   await backtestWorker.close();
   await proactiveWorker.close();

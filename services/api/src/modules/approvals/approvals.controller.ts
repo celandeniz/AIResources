@@ -8,12 +8,41 @@ export class ApprovalsController {
 
   @Get()
   list(@Query() q: any) {
-    return this.svc.list({ status: q.status, aiResourceId: q.aiResourceId, riskLevel: q.riskLevel });
+    return this.svc.list({
+      status: q.status,
+      riskLevel: q.riskLevel,
+      aiResourceId: q.aiResourceId,
+      model: q.model,
+      subject: q.subject,
+      aiAnswersOnly: q.aiAnswersOnly === 'true' || q.aiAnswersOnly === true,
+      hideSystem: q.hideSystem !== 'false', // default: hide system-generated
+    });
+  }
+
+  // Distinct AI resources + models among approvals — populates the filter dropdowns.
+  // Declared before :id so "filter-options" is never treated as an :id.
+  @Get('filter-options')
+  filterOptions() {
+    return this.svc.filterOptions();
   }
 
   @Get(':id')
   get(@Param('id') id: string) {
     return this.svc.get(id);
+  }
+
+  // Save an edited AI answer (no execution yet).
+  @Roles('consultant')
+  @Post(':id/draft')
+  saveDraft(@Param('id') id: string, @Body() body: { content: string; subject?: string }, @CurrentUser() user: AuthUser) {
+    return this.svc.saveDraft(id, user, body ?? { content: '' });
+  }
+
+  // Regenerate the AI answer from the original context + a short instruction.
+  @Roles('consultant')
+  @Post(':id/regenerate')
+  regenerate(@Param('id') id: string, @Body() body: { instruction: string }, @CurrentUser() user: AuthUser) {
+    return this.svc.regenerate(id, user, body?.instruction ?? '');
   }
 
   // Bulk decision for multi-select in the Approval Center. Processed sequentially

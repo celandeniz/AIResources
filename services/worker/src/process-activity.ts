@@ -5,6 +5,64 @@ import { runAgent, executeToolCallViaApi } from './agent-client';
 
 const prisma = new PrismaClient();
 
+// Actions that carry an AI-drafted reply — we prepare 3 toned alternatives for these.
+const MESSAGE_ACTIONS = new Set(['send_email', 'send_proposal', 'send_whatsapp_message', 'send_teams_message', 'post_message']);
+const ALT_TONES = [
+  { label: 'Kısa & net', hint: 'kısa, doğrudan ve net' },
+  { label: 'Detaylı & resmi', hint: 'detaylı, resmi ve profesyonel' },
+  { label: 'Samimi & ilişki-odaklı', hint: 'sıcak, samimi ve ilişki kuran' },
+];
+
+// Generate ≥3 toned alternatives (owner style) for a drafted reply. Each tone is
+// a separate, reliable single-draft call (qwen3 is unreliable at emitting 3
+// variants in one response), run in parallel.
+async function generateAlternatives(opts: {
+  wsId: string | null;
+  resource: any;
+  styleProfileText: string;
+  activity: any;
+  primaryDraft: string;
+}): Promise<{ label: string; content: string }[]> {
+  const styleBlock = opts.styleProfileText ? `\n\n## SAHİBİN YANIT STİLİ (bu sesle yaz)\n${opts.styleProfileText}` : '';
+  const body =
+    `=== GELEN MESAJ ===\nKonu: ${opts.activity?.subject ?? ''}\n\n${opts.activity?.body ?? ''}\n\n` +
+    `=== MEVCUT TASLAK (referans) ===\n${opts.primaryDraft}\n\n` +
+    `Bu gelen mesaja tek bir yanıt yaz. Yalnızca yanıt metnini draft.content alanına yaz.`;
+
+  const oneTone = async (tone: { label: string; hint: string }): Promise<{ label: string; content: string } | null> => {
+    const system =
+      `Sen, firma sahibinin sesiyle yanıt yazan bir asistansın. Gelen mesaja ${tone.hint} BİR yanıt yaz. ` +
+      `Yanıtı sahibin stiline uygun ve aynı dilde yaz. Sadece yanıt metnini üret.` + styleBlock;
+    const req: AgentRunRequest = {
+      run_id: `alt-${Date.now()}-${tone.label}`,
+      workspace_id: opts.wsId ?? undefined,
+      ai_resource: {
+        key: 'ai_style_alternatives', // non-registered → neutral generic graph
+        name: 'AI Alternatives',
+        system_prompt: system,
+        provider: opts.resource.llm_provider,
+        model: opts.resource.llm_model,
+        temperature: 0.6,
+        tools: [],
+        confidence_threshold: 0.5,
+      },
+      activity: { id: `alt-${Date.now()}`, channel: opts.activity?.channel ?? 'manual', subject: opts.activity?.subject ?? '', body, priority: 'normal', customer: null },
+      context: { thread: [], rag_hints: [], rag_hits: [] },
+      options: { max_tool_intents: 0 },
+    };
+    try {
+      const resp = await runAgent(req);
+      const content = String(resp.draft?.content ?? '').trim();
+      return content.length > 5 ? { label: tone.label, content } : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const results = await Promise.all(ALT_TONES.map(oneTone));
+  return results.filter((r): r is { label: string; content: string } => r !== null);
+}
+
 function flatActivityRecord(a: any): Record<string, any> {
   return {
     channel: a.channel,
@@ -157,6 +215,45 @@ export async function processActivity(activityId: string) {
     }
   } catch (_) { /* table may not exist yet before first migration */ }
 
+  // ── 2c-bis. Learned reply STYLE: profile (→ system prompt) + topic examples ──
+  // Applies the owner's distilled voice + the most relevant past replies for this
+  // channel/topic so AI drafts sound like the owner. Worker uses a raw client →
+  // filter by workspace_id explicitly (tenant safety).
+  let styleProfileText = '';
+  const styleHits: { chunk_id: string; title: string; score: number; text: string }[] = [];
+  try {
+    const prof = await (prisma as any).style_profiles.findFirst({
+      where: { workspace_id: wsId, channel: 'all' },
+    });
+    if (prof?.profile_text) styleProfileText = prof.profile_text;
+
+    // Channel-matched examples, ranked by keyword overlap with this activity.
+    const channelKey = activity.channel === 'devops' ? 'devops' : activity.channel === 'teams' ? 'teams' : 'email';
+    const examples = await (prisma as any).style_examples.findMany({
+      where: { workspace_id: wsId, channel: channelKey },
+      orderBy: { sent_at: 'desc' },
+      take: 60,
+      select: { subject: true, reply_text: true, keywords: true },
+    });
+    if (examples.length) {
+      const hay = `${activity.subject ?? ''} ${activity.body ?? ''}`.toLowerCase();
+      const scored = examples.map((e: any) => {
+        const kws: string[] = Array.isArray(e.keywords) ? e.keywords : [];
+        const overlap = kws.reduce((n, k) => (k && hay.includes(String(k).toLowerCase()) ? n + 1 : n), 0);
+        return { e, overlap };
+      });
+      scored.sort((a: any, b: any) => b.overlap - a.overlap);
+      for (const { e } of scored.slice(0, 3)) {
+        styleHits.push({
+          chunk_id: `style:${(e.subject ?? '').slice(0, 20)}`,
+          title: 'STYLE EXAMPLE (owner voice)',
+          score: 1,
+          text: `Konu: ${e.subject ?? ''}\nGeçmiş yanıt (sahibin stili):\n${String(e.reply_text).slice(0, 800)}`,
+        });
+      }
+    }
+  } catch (_) { /* style tables may not exist before first migration */ }
+
   // ── 2b. Skills composition (P4b) ──────────────────────────────────────────
   // Read attached skill keys from resource.config.skills; fetch active skill rows;
   // append prompt_fragments and union tools into the request (safe, deduped).
@@ -186,6 +283,12 @@ export async function processActivity(activityId: string) {
     }
   } catch (_) { /* skills table may not exist before first migration */ }
 
+  // Inject the learned reply-style guide so drafts match the owner's voice.
+  if (styleProfileText) {
+    composedSystemPrompt = composedSystemPrompt +
+      '\n\n## YANIT STİLİ (firma sahibinin öğrenilmiş stili — yanıtı bu sesle yaz)\n' + styleProfileText;
+  }
+
   const req: AgentRunRequest = {
     run_id: run.id,
     workspace_id: wsId ?? undefined,
@@ -213,6 +316,7 @@ export async function processActivity(activityId: string) {
       thread: activity.messages.map((m: any) => ({ role: m.direction === 'inbound' ? 'external' : 'internal', from: m.from_address ?? undefined, text: m.body ?? '' })),
       rag_hints: [],
       rag_hits: [
+        ...styleHits,
         ...memoryHits,
         ...templates.map((t: any) => ({ chunk_id: `template:${t.id}`, document_id: t.id, title: `Template: ${t.name}`, score: 1, text: t.content })),
       ],
@@ -362,7 +466,7 @@ export async function processActivity(activityId: string) {
 
     if (requiresApproval) {
       createdApproval = true;
-      await prisma.approvals.create({
+      const createdAppr = await prisma.approvals.create({
         data: {
           workspace_id: wsId,
           activity_id: activityId,
@@ -376,6 +480,24 @@ export async function processActivity(activityId: string) {
           status: 'pending',
         },
       });
+
+      // Prepare ≥3 toned alternative replies (owner style) for message actions.
+      if (MESSAGE_ACTIONS.has(intent.tool)) {
+        const primaryDraft = String((intent.args as any)?.content ?? (intent.args as any)?.body ?? resp.draft?.content ?? '');
+        if (primaryDraft) {
+          try {
+            const alternatives = await generateAlternatives({ wsId, resource, styleProfileText, activity, primaryDraft });
+            if (alternatives.length) {
+              await prisma.approvals.update({
+                where: { id: createdAppr.id },
+                data: { payload: { ...(intent.args as any), alternatives } as any },
+              });
+            }
+          } catch (e) {
+            console.warn(`Alternatives generation failed for approval ${createdAppr.id}:`, (e as Error).message);
+          }
+        }
+      }
       await notify({
         workspaceId: wsId,
         type: 'approval_created',

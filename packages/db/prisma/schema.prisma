@@ -111,6 +111,7 @@ enum integration_type {
   sharepoint
   crm
   whatsapp
+  cosmos
 }
 
 enum integration_status {
@@ -1023,6 +1024,73 @@ model reports {
   @@index([workspace_id])
   @@index([status])
   @@map("reports")
+}
+
+// ── AI-generated Project Status Reports with Risks ────────────────────────────
+// Synthesised from Azure DevOps work items (Cosmos) + Outlook emails (Graph) for
+// a selected project + timeframe. ai_project_manager writes the narrative + risks.
+model status_reports {
+  workspace_id  String?  @db.Uuid
+  id            String   @id @default(uuid()) @db.Uuid
+  title         String   @db.VarChar(300)
+  customer_id   String?
+  org_label     String
+  project_label String
+  period_label  String
+  period_start  DateTime @db.Timestamptz(6)
+  period_end    DateTime @db.Timestamptz(6)
+  sources       Json     @default("{}")   // {devops:bool, outlook:bool, teams:bool}
+  keywords      Json     @default("[]")   // string[]
+  inputs        Json     @default("{}")   // gathered raw summary (devops stats, email count, etc.)
+  findings      Json     @default("{}")   // AI structured output (health/summary/risks/...)
+  health        String?  @db.VarChar(16)  // green|amber|red (denormalized for list chips)
+  html_snapshot String?  @db.Text
+  status        String   @default("draft")
+  created_by    String?  @db.Uuid
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([created_at])
+  @@map("status_reports")
+}
+
+// Learned reply-style profile (distilled from the owner's past sent replies).
+// One row per (workspace, channel); channel 'all' is the global default applied
+// to every reply draft. Injected into the drafting system prompt.
+model style_profiles {
+  workspace_id String?  @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  channel      String   @default("all") @db.VarChar(20) // all | email | teams | devops
+  profile_text String   @db.Text
+  sample_count Int      @default(0)
+  sources      Json     @default("{}")
+  updated_at   DateTime @updatedAt @db.Timestamptz(6)
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([workspace_id, channel])
+  @@index([workspace_id])
+  @@map("style_profiles")
+}
+
+// Individual harvested reply examples (few-shot). Retrieved by channel + topic
+// keyword overlap at draft time and injected as style examples.
+model style_examples {
+  workspace_id     String?  @db.Uuid
+  id               String   @id @default(uuid()) @db.Uuid
+  channel          String   @db.VarChar(20) // email | teams | devops
+  external_id      String?  @db.VarChar(320) // source message id (idempotency)
+  subject          String?  @db.VarChar(500)
+  topic            String?  @db.VarChar(120)
+  keywords         Json     @default("[]")
+  incoming_excerpt String?  @db.Text
+  reply_text       String   @db.Text
+  sent_at          DateTime? @db.Timestamptz(6)
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([workspace_id, channel, external_id])
+  @@index([workspace_id, channel])
+  @@map("style_examples")
 }
 
 // ── Long-term per-resource memory (2c) ────────────────────────────────────────

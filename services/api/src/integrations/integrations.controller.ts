@@ -9,6 +9,7 @@ import { GraphTeamsAdapter } from './graph/graph-teams.adapter';
 import { graphConfigured } from './graph/graph-client';
 import { Roles } from '../auth/decorators';
 import { IntegrationKind } from '@dynops/shared';
+import { CosmosTimelogService } from './cosmos/timelog.service';
 
 const TYPE_TO_KIND: Record<string, IntegrationKind> = {
   graph_email: 'email',
@@ -24,7 +25,10 @@ const TYPE_TO_KIND: Record<string, IntegrationKind> = {
 
 @Controller('integrations')
 class IntegrationsController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cosmos: CosmosTimelogService,
+  ) {}
 
   @Get()
   @Roles('admin')
@@ -49,6 +53,7 @@ class IntegrationsController {
   async test(@Param('id') id: string) {
     const row = await this.prisma.integrations.findUnique({ where: { id } });
     if (!row) return { ok: false, detail: 'not found' };
+    if (row.type === 'cosmos') return this.cosmos.healthCheck();
     const kind = TYPE_TO_KIND[row.type] ?? 'internal';
     const conn = { id: row.id, type: row.type, name: row.name, config: (row.config as any) ?? {}, isMock: row.is_mock };
     let adapter: any = getAdapter(kind);
@@ -63,7 +68,7 @@ class IntegrationsController {
 @Module({
   imports: [AuditModule],
   controllers: [IntegrationsController],
-  providers: [ExecutorService],
+  providers: [ExecutorService, CosmosTimelogService],
   exports: [ExecutorService],
 })
 export class IntegrationsModule {}

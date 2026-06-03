@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { QueueService } from '../../queue/queue.service';
 import { AuditService } from '../../common/audit.service';
 import { emitStreamEvent } from '../../common/events';
+import { detectSystemEmail } from '../../common/system-email';
 import type { ActivityChannel, Priority } from '@dynops/shared';
 
 export interface ListFilters {
@@ -90,7 +91,7 @@ export class ActivitiesService {
   }
 
   // Generic ingestion (mock email/Teams/OpsConnect/DevOps/GitHub/BC). Idempotent by (source_id, external_id).
-  async ingest(input: { source_id?: string; channel: ActivityChannel; external_id?: string; from?: string; subject?: string; body?: string; customer_id?: string; project_id?: string; category?: string; to?: string[]; cc?: string[]; conversation_id?: string }) {
+  async ingest(input: { source_id?: string; channel: ActivityChannel; external_id?: string; from?: string; subject?: string; body?: string; customer_id?: string; project_id?: string; category?: string; to?: string[]; cc?: string[]; conversation_id?: string; headers?: Record<string, string> }) {
     if (input.source_id && input.external_id) {
       const existing = await this.prisma.activities.findFirst({ where: { source_id: input.source_id, external_id: input.external_id } });
       if (existing) return { activityId: existing.id, deduped: true };
@@ -102,6 +103,14 @@ export class ActivitiesService {
       const c = await this.prisma.customers.findFirst({ where: { domain } });
       customerId = c?.id;
     }
+
+    // System-generated email recognition. Auto-generated mail (no-reply senders,
+    // RFC auto headers, bounces/OOO, newsletters/alerts) is ingested for the
+    // record but NOT routed to an AI for a reply — no agent run, no approval.
+    const sys = input.channel === 'email'
+      ? detectSystemEmail({ from: input.from, subject: input.subject, body: input.body, headers: input.headers })
+      : { system: false as const, reason: undefined };
+
     const activity = await this.prisma.activities.create({
       data: {
         source_id: input.source_id,
@@ -112,8 +121,14 @@ export class ActivitiesService {
         category: input.category,
         customer_id: customerId,
         project_id: input.project_id,
-        status: 'new',
-        metadata: { from: input.from, to: input.to ?? [], cc: input.cc ?? [], conversation_id: input.conversation_id ?? null },
+        status: sys.system ? 'archived' : 'new',
+        metadata: {
+          from: input.from,
+          to: input.to ?? [],
+          cc: input.cc ?? [],
+          conversation_id: input.conversation_id ?? null,
+          ...(sys.system ? { system_generated: true, system_reason: sys.reason } : {}),
+        },
       },
     });
     if (input.from || input.body) {
@@ -121,8 +136,10 @@ export class ActivitiesService {
         data: { activity_id: activity.id, direction: 'inbound', channel: input.channel, author_type: 'external', from_address: input.from, subject: input.subject, body: input.body },
       });
     }
-    await this.audit.log({ actorType: 'system', action: 'ingest', entityType: 'activities', entityId: activity.id, activityId: activity.id, summary: `Ingested from ${input.channel}` });
+    await this.audit.log({ actorType: 'system', action: 'ingest', entityType: 'activities', entityId: activity.id, activityId: activity.id, summary: sys.system ? `Ingested from ${input.channel} — skipped (system-generated: ${sys.reason})` : `Ingested from ${input.channel}` });
     emitStreamEvent({ type: 'activity', workspaceId: activity.workspace_id, payload: activity });
+    // Skip drafting/approval for system-generated mail.
+    if (sys.system) return { activityId: activity.id, skipped: true, reason: sys.reason };
     const jobId = await this.queue.enqueueActivity(activity.id);
     return { activityId: activity.id, jobId };
   }

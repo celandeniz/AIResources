@@ -167,6 +167,38 @@ async function main() {
     integrationByName[i.name] = row.id;
   }
 
+  // ── Cosmos DB — DynOpsCore (Time Log / Work Reports source, read-only) ────
+  // Live status is derived from the API container's env at create time. The
+  // update stays a no-op so any admin edit survives re-seeds.
+  const cosmosEndpoint = process.env.COSMOS_ENDPOINT ?? '';
+  const cosmosKey = process.env.COSMOS_READONLY_KEY ?? process.env.COSMOS_KEY ?? '';
+  const cosmosLive = !!(cosmosEndpoint && cosmosKey);
+  const cosmosHost = cosmosEndpoint.replace(/^https?:\/\//, '').replace(/[:/].*$/, '') || '(not set)';
+  const cosmosName = 'DynOps Core — Time Logs (DynOpsCore)';
+  const cosmosRow = await prisma.integrations.upsert({
+    where: { type_name: { type: 'cosmos' as any, name: cosmosName } },
+    update: {},
+    create: {
+      type: 'cosmos' as any,
+      name: cosmosName,
+      direction: 'in',
+      status: cosmosLive ? 'connected' : 'mock',
+      is_mock: !cosmosLive,
+      credentials_ref: cosmosLive ? 'env:COSMOS_READONLY_KEY' : null,
+      config: {
+        account: cosmosHost,
+        endpoint: cosmosEndpoint || '(unset — mock mode)',
+        database: process.env.COSMOS_DB ?? 'DynOpsCore',
+        access: 'read-only key',
+        containers: ['core_time_logs', 'core_devops_tasks', 'core_customers', 'core_companies', 'core_users'],
+        powers: 'Time Log / Work Reports (/reports) + Business Central sales order',
+        join_key: 'org_name',
+        note: 'Secrets (pat/client_secret) excluded via field projection.',
+      } as Prisma.InputJsonValue,
+    },
+  });
+  integrationByName[cosmosName] = cosmosRow.id;
+
   // ── Content / proposal templates ───────────────────────────────────────
   const templates: { name: string; type: string; content: string; metadata?: Prisma.InputJsonValue }[] = [
     {
@@ -411,7 +443,7 @@ async function main() {
     'workflows', 'workflow_rules', 'agent_runs', 'tool_calls', 'approvals',
     'tasks', 'messages', 'documents', 'knowledge_chunks', 'integrations', 'audit_logs',
     'prompt_versions', 'notifications', 'templates', 'digest_results', 'automations',
-    'resource_memories', 'skills', 'reports',
+    'resource_memories', 'skills', 'reports', 'status_reports', 'style_profiles', 'style_examples',
   ];
   // audit_logs is append-only (trigger blocks UPDATE) — drop it for the backfill;
   // the API recreates the trigger on boot (which starts after this seed).

@@ -31,6 +31,8 @@ import { SkillsModule } from './modules/skills/skills.controller';
 import { TeamsModule } from './modules/teams/teams.controller';
 import { WhatsAppModule } from './modules/whatsapp/whatsapp.controller';
 import { ReportsModule } from './modules/reports/reports.controller';
+import { StatusReportsModule } from './modules/status-reports/status-reports.controller';
+import { StyleModule } from './modules/style/style.controller';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -64,6 +66,8 @@ import { HealthController } from './health.controller';
     TeamsModule,
     WhatsAppModule,
     ReportsModule,
+    StatusReportsModule,
+    StyleModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],

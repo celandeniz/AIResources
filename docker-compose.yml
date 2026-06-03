@@ -136,6 +136,9 @@ services:
       DAILY_BRIEF: "true"
       ENABLE_PROACTIVE: "true"
       PROACTIVE_TICK_MS: "300000"
+      # Scheduled reply-style re-learn (re-harvest sent mail + re-distill profile)
+      ENABLE_STYLE_RELEARN: ${ENABLE_STYLE_RELEARN:-true}
+      STYLE_RELEARN_TICK_MS: ${STYLE_RELEARN_TICK_MS:-604800000}
       # Email watch / SLA escalation
       WATCH_OWNER_EMAIL: ${WATCH_OWNER_EMAIL:-deniz@dynamicsops.com}
       EMAIL_WATCH_ENABLED: ${EMAIL_WATCH_ENABLED:-true}

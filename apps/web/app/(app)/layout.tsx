@@ -7,7 +7,7 @@ import {
   LayoutDashboard, Inbox, Users, CheckSquare, BookOpen, ScrollText, Workflow,
   Plug, Sun, Moon, Bell, Search, ChevronsLeft, LogOut, ChevronDown,
   Building2, UsersRound, ShieldCheck, History, FileText, Repeat, Target, Gauge,
-  BarChart3, Sparkles, FileBarChart,
+  BarChart3, Sparkles, FileBarChart, ClipboardCheck, PenLine,
 } from 'lucide-react';
 import { getToken, getUser, logout, api } from '../../lib/api';
 import { CommandPalette } from '../../components/command-palette';
@@ -35,10 +35,12 @@ const SECTIONS = [
     { href: '/performance', label: 'Performance', icon: Gauge },
     { href: '/analyst', label: 'Data Analyst', icon: BarChart3 },
     { href: '/reports', label: 'Reports', icon: FileBarChart },
+    { href: '/status-reports', label: 'Project Status', icon: ClipboardCheck },
     { href: '/backtest', label: 'Backtest', icon: History },
     { href: '/audit', label: 'Audit & Logs', icon: ScrollText },
   ]},
   { heading: 'Admin', items: [
+    { href: '/settings/style', label: 'Reply Style', icon: PenLine },
     { href: '/settings/integrations', label: 'Integrations', icon: Plug },
     { href: '/settings/workspace', label: 'Workspace', icon: Building2 },
     { href: '/settings/members', label: 'Members', icon: UsersRound },

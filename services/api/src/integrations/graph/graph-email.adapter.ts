@@ -63,7 +63,7 @@ export class GraphEmailAdapter implements ConnectorAdapter {
     const url =
       `/users/${encodeURIComponent(mailbox)}/mailFolders/inbox/messages` +
       `?$filter=${filter}&$orderby=receivedDateTime%20desc&$top=25` +
-      `&$select=subject,bodyPreview,from,toRecipients,ccRecipients,conversationId,receivedDateTime,internetMessageId`;
+      `&$select=subject,bodyPreview,from,toRecipients,ccRecipients,conversationId,receivedDateTime,internetMessageId,internetMessageHeaders`;
     const page = await graphFetch(url);
     const messages: GraphMail[] = [];
     let watermark = since;
@@ -78,6 +78,7 @@ export class GraphEmailAdapter implements ConnectorAdapter {
         to: (m.toRecipients ?? []).map((r: any) => r.emailAddress?.address?.toLowerCase()).filter(Boolean),
         cc: (m.ccRecipients ?? []).map((r: any) => r.emailAddress?.address?.toLowerCase()).filter(Boolean),
         conversationId: m.conversationId,
+        headers: mapHeaders(m.internetMessageHeaders),
       });
       if (m.receivedDateTime && m.receivedDateTime > watermark) watermark = m.receivedDateTime;
     }
@@ -177,6 +178,22 @@ export function customerRecipients(recipients: string[] = []): string[] {
   });
 }
 
+// Graph internetMessageHeaders → lowercased {name: value}, keeping only the
+// headers used by system-email detection (avoids storing the full header set).
+const KEPT_HEADERS = new Set([
+  'auto-submitted', 'x-auto-response-suppress', 'precedence', 'list-unsubscribe',
+  'list-id', 'x-autoreply', 'x-autorespond', 'x-mailer',
+]);
+function mapHeaders(raw: any): Record<string, string> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const h of raw) {
+    const name = String(h?.name ?? '').toLowerCase();
+    if (name && KEPT_HEADERS.has(name)) out[name] = String(h?.value ?? '');
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 export interface GraphMail {
   id: string;
   internetMessageId?: string;
@@ -187,6 +204,7 @@ export interface GraphMail {
   to?: string[];
   cc?: string[];
   conversationId?: string;
+  headers?: Record<string, string>; // lowercased internet message headers (subset)
 }
 
 export interface GraphSentMail {
