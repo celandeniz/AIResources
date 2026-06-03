@@ -22,4 +22,5 @@ export const TENANT_MODELS = new Set([
   'agent_feedback', 'backtests', 'backtest_items', 'prompt_versions', 'notifications',
   'templates', 'digest_results', 'automations', 'missions', 'agent_messages',
   'resource_memories', 'skills', 'reports', 'status_reports', 'style_profiles', 'style_examples',
+  'code_tasks',
 ]);

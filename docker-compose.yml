@@ -107,6 +107,13 @@ services:
       # Azure Cosmos DB — Time Log / Work Reports (read-only key; empty = mock mode)
       COSMOS_ENDPOINT: ${COSMOS_ENDPOINT:-}
       COSMOS_READONLY_KEY: ${COSMOS_READONLY_KEY:-}
+      # OpenCode server — approval-gated code_task tool (empty ⇒ MOCK mode).
+      # See infra/opencode-setup.md for running `opencode serve`.
+      OPENCODE_SERVER_URL: ${OPENCODE_SERVER_URL:-}
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD:-}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
+      OPENCODE_MODEL: ${OPENCODE_MODEL:-ollama/qwen2.5-coder:14b}
+      OPENCODE_AGENT: ${OPENCODE_AGENT:-build}
       COSMOS_KEY: ${COSMOS_KEY:-}
       COSMOS_CONNECTION_STRING: ${COSMOS_CONNECTION_STRING:-}
       COSMOS_DB: ${COSMOS_DB:-DynOpsCore}

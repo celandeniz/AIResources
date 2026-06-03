@@ -7,6 +7,7 @@ import { GraphEmailAdapter } from './graph/graph-email.adapter';
 import { GraphTeamsAdapter } from './graph/graph-teams.adapter';
 import { graphConfigured } from './graph/graph-client';
 import { whatsAppAdapter, whatsappConfigured } from './whatsapp/whatsapp.adapter';
+import { runCodeTask } from './opencode/opencode.client';
 import { TOOL_REGISTRY, isKnownTool, IntegrationKind, ToolName } from '@dynops/shared';
 import { tenantStore } from '../common/tenant';
 import type { ConnectorAdapter, ConnectionInfo } from './contracts';
@@ -116,6 +117,20 @@ export class ExecutorService {
       let result: any;
       if (kind === 'internal') {
         result = await this.executeInternal(tool, args, { activityId, workspaceId: wsId ?? null, sourceResourceId: (tc.agent_run as any)?.ai_resource_id ?? null });
+        // code_task: persist the OpenCode result back onto the code_tasks row.
+        if (tool === 'code_task' && args.code_task_id) {
+          try {
+            const ct = (result?.result ?? {}) as any;
+            await (this.prisma as any).code_tasks.updateMany({
+              where: { id: args.code_task_id },
+              data: {
+                status: ct.ok ? 'done' : 'failed',
+                result: ct as any,
+                share_url: ct.shareUrl ?? null,
+              },
+            });
+          } catch { /* non-critical */ }
+        }
       } else if (!conn) {
         result = { ok: false, detail: `no connection of kind ${kind} configured` };
       } else {
@@ -250,6 +265,15 @@ export class ExecutorService {
       } catch (e) {
         return { ok: false, detail: (e as Error).message };
       }
+    }
+    if (tool === 'code_task') {
+      const r = await runCodeTask({
+        instruction: String(args.instruction ?? ''),
+        model: args.model,
+        agent: args.agent,
+        repo: args.repo,
+      });
+      return { ok: r.ok, detail: r.detail ?? r.summary?.slice(0, 200), result: r };
     }
     if (tool === 'make_chart') {
       const type = args.type && ['bar', 'donut', 'line'].includes(String(args.type)) ? String(args.type) : 'bar';

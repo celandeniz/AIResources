@@ -444,6 +444,7 @@ async function main() {
     'tasks', 'messages', 'documents', 'knowledge_chunks', 'integrations', 'audit_logs',
     'prompt_versions', 'notifications', 'templates', 'digest_results', 'automations',
     'resource_memories', 'skills', 'reports', 'status_reports', 'style_profiles', 'style_examples',
+    'code_tasks',
   ];
   // audit_logs is append-only (trigger blocks UPDATE) — drop it for the backfill;
   // the API recreates the trigger on boot (which starts after this seed).

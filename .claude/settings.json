@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(pnpm --filter @dynops/web build)",
-      "Bash(pnpm --filter @dynops/db build)"
+      "Bash(pnpm --filter @dynops/db build)",
+      "WebFetch(domain:opencode.ai)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

@@ -33,6 +33,7 @@ import { WhatsAppModule } from './modules/whatsapp/whatsapp.controller';
 import { ReportsModule } from './modules/reports/reports.controller';
 import { StatusReportsModule } from './modules/status-reports/status-reports.controller';
 import { StyleModule } from './modules/style/style.controller';
+import { CodeTasksModule } from './modules/code-tasks/code-tasks.controller';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -68,6 +69,7 @@ import { HealthController } from './health.controller';
     ReportsModule,
     StatusReportsModule,
     StyleModule,
+    CodeTasksModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],

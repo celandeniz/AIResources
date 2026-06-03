@@ -1055,6 +1055,30 @@ model status_reports {
   @@map("status_reports")
 }
 
+// ── Approval-gated AI code-writing tasks (driven by OpenCode server) ──────────
+// A user (or AI Resource) proposes a coding task; it goes through the Human
+// Approval Center; on approve the executor drives a headless `opencode serve`
+// instance and stores the summary + diff. Draft-first: nothing is committed.
+model code_tasks {
+  workspace_id String?  @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  title        String   @db.VarChar(300)
+  repo         String?  @db.VarChar(300)
+  instruction  String   @db.Text
+  model        String?  @db.VarChar(120)
+  agent        String?  @db.VarChar(80)
+  status       String   @default("draft") // draft|approved|running|done|failed
+  result       Json?
+  share_url    String?  @db.Text
+  created_by   String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([created_at])
+  @@map("code_tasks")
+}
+
 // Learned reply-style profile (distilled from the owner's past sent replies).
 // One row per (workspace, channel); channel 'all' is the global default applied
 // to every reply draft. Injected into the drafting system prompt.
