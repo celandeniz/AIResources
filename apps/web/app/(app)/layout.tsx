@@ -88,7 +88,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     const link = (
                       <Link key={n.href} href={n.href}
                         className={cn(
-                          'group flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-all',
+                          'group flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm transition-colors duration-150 ease-out',
                           active ? 'bg-primary/10 text-primary font-medium' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
                           collapsed && 'justify-center',
                         )}

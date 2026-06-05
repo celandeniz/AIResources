@@ -20,7 +20,7 @@ export function Tooltip({ children, content }: { children: React.ReactNode; cont
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content
           sideOffset={6}
-          className="z-50 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md animate-fade-up"
+          className="z-50 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md origin-[var(--radix-tooltip-content-transform-origin)] duration-150 ease-out animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
         >
           {content}
         </TooltipPrimitive.Content>
@@ -59,7 +59,7 @@ export const TabsList = ({ className, ...props }: React.ComponentPropsWithoutRef
 );
 export const TabsTrigger = ({ className, ...props }: React.ComponentPropsWithoutRef<typeof TabsPrimitive.Trigger>) => (
   <TabsPrimitive.Trigger
-    className={cn('inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium transition-all data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm', className)}
+    className={cn('inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium transition-[color,background-color,box-shadow] duration-150 ease-out data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm', className)}
     {...props}
   />
 );

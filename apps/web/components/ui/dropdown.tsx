@@ -12,7 +12,13 @@ export function DropdownContent({ children, className, align = 'end' }: { childr
       <DM.Content
         align={align}
         sideOffset={6}
-        className={cn('z-50 min-w-[12rem] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg animate-fade-up', className)}
+        className={cn(
+          'z-50 min-w-[12rem] overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg',
+          'origin-[var(--radix-dropdown-menu-content-transform-origin)] duration-150 ease-out',
+          'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
+          className,
+        )}
       >
         {children}
       </DM.Content>
