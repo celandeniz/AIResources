@@ -107,7 +107,7 @@ async function notify(input: { workspaceId?: string | null; type: string; title:
 export async function processActivity(activityId: string) {
   const activity = await prisma.activities.findUnique({
     where: { id: activityId },
-    include: { customer: true, project: true, messages: { orderBy: { created_at: 'asc' } }, assigned_resource: true },
+    include: { customer: true, project: true, messages: { orderBy: { created_at: 'asc' } }, assigned_resource: true, source: true },
   });
   if (!activity) throw new Error(`activity ${activityId} not found`);
   const wsId = activity.workspace_id; // tenant scope for all writes in this job
@@ -146,6 +146,37 @@ export async function processActivity(activityId: string) {
     }
   }
 
+  // ── 0b. Reply settings for this account (Kurulum) ──────────────────────────
+  // Resolve the per-account reply settings (its integration), else the global
+  // default row. Wrapped in try/catch — the table may be empty / pre-migration.
+  let rs: any = null;
+  try {
+    const integrationId = (activity as any).source?.integration_id ?? null;
+    rs = await (prisma as any).reply_settings.findFirst({ where: { workspace_id: wsId, integration_id: integrationId } });
+    if (!rs) rs = await (prisma as any).reply_settings.findFirst({ where: { workspace_id: wsId, integration_id: null } });
+  } catch (_) { /* reply_settings table may not exist before first migration */ }
+
+  // Auto-reply toggle: if this account is set to NOT auto-reply, park it (like
+  // the passive email-watch branch) and return before any agent run / draft.
+  if (rs && rs.auto_reply_enabled === false) {
+    await prisma.activities.update({
+      where: { id: activityId },
+      data: {
+        status: 'watching',
+        metadata: { ...(activity.metadata as any), reply_disabled: true },
+      },
+    });
+    await audit({
+      workspaceId: wsId,
+      action: 'route',
+      entityType: 'activities',
+      entityId: activityId,
+      activityId,
+      summary: 'Auto-reply disabled for this account (Kurulum) — parked without a draft',
+    });
+    return;
+  }
+
   // ── 1. Routing (pre_agent rules) ───────────────────────────────────────
   let resourceId = activity.assigned_resource_id;
   let matchedRuleId: string | null = activity.workflow_rule_id;
@@ -166,6 +197,15 @@ export async function processActivity(activityId: string) {
     await prisma.activities.update({ where: { id: activityId }, data: { status: 'escalated' } });
     await audit({ workspaceId: wsId, action: 'escalate', entityType: 'activities', entityId: activityId, activityId, summary: 'No routing rule matched' });
     return;
+  }
+
+  // Persona routing (Kurulum): if this account pins a specific AI resource to
+  // draft its replies, override the routed resource before we load it.
+  if (rs?.resource_key) {
+    try {
+      const persona = await prisma.ai_resources.findUnique({ where: { key: rs.resource_key } });
+      if (persona) resourceId = persona.id;
+    } catch (_) { /* best-effort persona override */ }
   }
 
   const resource = await prisma.ai_resources.findUnique({ where: { id: resourceId } });
@@ -450,6 +490,17 @@ export async function processActivity(activityId: string) {
     const overLimit = amount !== null && approvalLimit !== null && amount > approvalLimit;
     const requiresApproval = sensitive || resp.needs_escalation || confidence < threshold || overLimit;
 
+    // Reply identity (Kurulum): for outbound MESSAGE intents, stamp the account's
+    // signature + reply-as name/email onto the intent args before they are saved.
+    const MSG = ['send_email', 'send_proposal'];
+    if (MSG.includes(intent.tool) && rs) {
+      const a: any = intent.args ?? {};
+      if (rs.signature) { const bodyKey = a.body != null ? 'body' : 'content'; a[bodyKey] = String(a[bodyKey] ?? '') + '\n\n' + rs.signature; }
+      if (rs.reply_as_name) a.from_name = rs.reply_as_name;
+      if (rs.reply_as_email) a.from_email = rs.reply_as_email;
+      intent.args = a;
+    }
+
     const toolCall = await prisma.tool_calls.create({
       data: {
         workspace_id: wsId,
@@ -473,7 +524,11 @@ export async function processActivity(activityId: string) {
           agent_run_id: run.id,
           tool_call_id: toolCall.id,
           action: intent.tool,
-          payload: (intent.args ?? {}) as any,
+          payload: {
+            ...((intent.args ?? {}) as any),
+            reply_as: { name: rs?.reply_as_name ?? null, email: rs?.reply_as_email ?? null },
+            recipient: (intent.args as any)?.to ?? null,
+          } as any,
           risk_level: risk,
           amount: amount ?? undefined,
           reason: resp.needs_escalation ? 'escalation' : confidence < threshold ? 'low_confidence' : 'sensitive_action',
@@ -490,7 +545,14 @@ export async function processActivity(activityId: string) {
             if (alternatives.length) {
               await prisma.approvals.update({
                 where: { id: createdAppr.id },
-                data: { payload: { ...(intent.args as any), alternatives } as any },
+                data: {
+                  payload: {
+                    ...(intent.args as any),
+                    reply_as: { name: rs?.reply_as_name ?? null, email: rs?.reply_as_email ?? null },
+                    recipient: (intent.args as any)?.to ?? null,
+                    alternatives,
+                  } as any,
+                },
               });
             }
           } catch (e) {

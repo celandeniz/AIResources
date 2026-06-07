@@ -132,6 +132,7 @@ enum llm_provider {
   anthropic
   openai
   azure_openai
+  gemini
 }
 
 enum ai_resource_status {
@@ -1077,6 +1078,29 @@ model code_tasks {
   @@index([workspace_id])
   @@index([created_at])
   @@map("code_tasks")
+}
+
+// Per-account reply configuration: for each connected mailbox/account, whether
+// the AI auto-replies to incoming items, WHICH AI resource (persona) replies,
+// and the reply IDENTITY (display name + from address + signature). A row with
+// integration_id = null is the workspace-wide default.
+model reply_settings {
+  workspace_id       String?  @db.Uuid
+  id                 String   @id @default(uuid()) @db.Uuid
+  integration_id     String?  @db.Uuid // the account/mailbox; null = global default
+  account_label      String   @db.VarChar(200)
+  auto_reply_enabled Boolean  @default(true)
+  reply_as_name      String?  @db.VarChar(200)
+  reply_as_email     String?  @db.VarChar(320)
+  signature          String?  @db.Text
+  resource_key       String?  @db.VarChar(80) // which AI resource drafts replies
+  created_by         String?  @db.Uuid
+  created_at         DateTime @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([integration_id])
+  @@map("reply_settings")
 }
 
 // Learned reply-style profile (distilled from the owner's past sent replies).

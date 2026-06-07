@@ -9,7 +9,7 @@ import { Button } from '../../../components/ui/button';
 import { Badge } from '../../../components/ui/badge';
 import { Input, Select } from '../../../components/ui/input';
 import { Skeleton } from '../../../components/ui/skeleton';
-import { Check, X, ShieldCheck, ExternalLink, CheckCheck, Sparkles, Save, RefreshCw, Search } from 'lucide-react';
+import { Check, X, ShieldCheck, ExternalLink, CheckCheck, Sparkles, Save, RefreshCw, Search, Inbox, User, Plug } from 'lucide-react';
 
 interface Filters {
   aiResourceId: string;
@@ -27,6 +27,8 @@ export default function ApprovalsPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [opts, setOpts] = useState<{ resources: { id: string; name: string }[]; models: string[] }>({ resources: [], models: [] });
   const [filters, setFilters] = useState<Filters>({ aiResourceId: '', model: '', subject: '', aiAnswersOnly: false, hideSystem: true });
+  const [sources, setSources] = useState<any[]>([]);
+  const [syncing, setSyncing] = useState(false);
 
   // Per-card edit state: { [id]: { draft, instruction, mode } }
   const [edit, setEdit] = useState<Record<string, { draft: string; instruction: string }>>({});
@@ -48,6 +50,7 @@ export default function ApprovalsPage() {
   }, [qs]);
   useEffect(() => { setLoading(true); load().catch(() => setLoading(false)); }, [load]);
   useEffect(() => { api('/approvals/filter-options').then(setOpts).catch(() => {}); }, []);
+  useEffect(() => { api('/sources').then(setSources).catch(() => {}); }, []);
   useEffect(() => {
     let fallback: ReturnType<typeof setInterval> | undefined;
     try {
@@ -126,12 +129,43 @@ export default function ApprovalsPage() {
   const allSelected = items.length > 0 && selected.size === items.length;
   const activeFilters = filters.aiResourceId || filters.model || filters.subject || filters.aiAnswersOnly || !filters.hideSystem;
 
+  // ── Pull latest from data sources (Outlook/Teams pollers) on demand ──────────
+  function lastSyncedLabel(): string {
+    const times = sources.map((s) => s.last_synced_at).filter(Boolean).map((t) => new Date(t).getTime());
+    if (!times.length) return 'henüz çekilmedi';
+    const ago = Math.round((Date.now() - Math.max(...times)) / 60000);
+    return ago <= 0 ? 'az önce' : ago < 60 ? `${ago} dk önce` : `${Math.round(ago / 60)} sa önce`;
+  }
+  async function syncSources() {
+    setSyncing(true);
+    try {
+      const r = await api('/sources/sync', { method: 'POST' });
+      setSources(r?.sources ?? []);
+      const live = (r?.sources ?? []).filter((s: any) => !s.is_mock);
+      if (!r?.graphConfigured) toast.info('Canlı kaynak yok (Graph yapılandırılmadı) — liste yenilendi');
+      else toast.success(`Kaynaklardan çekildi · ${live.length} canlı bağlantı`);
+      await load();
+    } catch (e: any) { toast.error(e.message); } finally { setSyncing(false); }
+  }
+
   return (
     <div>
-      <PageHeader title="Approval Center" subtitle="Draft-first: AI actions wait here until a human approves." />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <PageHeader title="Approval Center" subtitle="Draft-first: AI actions wait here until a human approves." />
+        <div className="flex items-center gap-2">
+          {sources.length > 0 && (
+            <span className="text-xs text-muted-foreground" title={sources.map((s) => `${s.name}${s.last_synced_at ? ' · ' + new Date(s.last_synced_at).toLocaleString() : ' · —'}`).join('\n')}>
+              {sources.filter((s) => !s.is_mock).length} canlı kaynak · son: {lastSyncedLabel()}
+            </span>
+          )}
+          <Button size="sm" variant="outline" disabled={syncing} onClick={syncSources}>
+            <RefreshCw className={`size-4 ${syncing ? 'animate-spin' : ''}`} />{syncing ? 'Çekiliyor…' : 'Kaynaklardan çek'}
+          </Button>
+        </div>
+      </div>
 
       {/* Filter bar */}
-      <Card className="mb-4 p-3">
+      <Card className="mb-4 mt-4 p-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -197,6 +231,53 @@ export default function ApprovalsPage() {
                     <Button size="sm" variant="success" onClick={() => decide(ap.id, 'approve')} disabled={busy === ap.id}><Check className="size-4" />Approve & execute</Button>
                   </div>
                 </div>
+                {/* Origin: data source · sender · triggered-from · original message */}
+                {ap.origin && (
+                  <div className="border-b border-border bg-background px-5 py-3">
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Inbox className="size-3.5 text-muted-foreground" />
+                        <span className="text-muted-foreground">Veri kaynağı:</span>
+                        <Badge variant="neutral">{ap.origin.channel}</Badge>
+                      </span>
+                      {ap.origin.source_name && (
+                        <span className="inline-flex items-center gap-1.5">
+                          <Plug className="size-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">Tetikleyen bağlantı:</span>
+                          <span className="font-medium">{ap.origin.source_name}{ap.origin.integration_type ? ` · ${ap.origin.integration_type}` : ''}</span>
+                        </span>
+                      )}
+                      {ap.origin.from && (
+                        <span className="inline-flex items-center gap-1.5">
+                          <User className="size-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">Gönderen:</span>
+                          <span className="font-medium">{ap.origin.from}</span>
+                        </span>
+                      )}
+                      {ap.origin.recipient && (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Kime:</span>
+                          <span className="font-medium">{ap.origin.recipient}</span>
+                        </span>
+                      )}
+                      {ap.origin.reply_as && (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Kim olarak:</span>
+                          <span className="font-medium">{ap.origin.reply_as.name}{ap.origin.reply_as.email ? ` <${ap.origin.reply_as.email}>` : ''}</span>
+                        </span>
+                      )}
+                      {ap.origin.customer && <Badge variant="outline">{ap.origin.customer}</Badge>}
+                    </div>
+                    {ap.origin.original_message && (
+                      <details className="mt-2 group">
+                        <summary className="cursor-pointer select-none text-xs text-primary hover:underline">
+                          Orijinal mesajı göster{ap.origin.subject ? ` — ${ap.origin.subject}` : ''}
+                        </summary>
+                        <div className="mt-1.5 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/30 p-3 text-xs leading-relaxed">{ap.origin.original_message}</div>
+                      </details>
+                    )}
+                  </div>
+                )}
                 <div className="grid gap-5 p-5 md:grid-cols-5">
                   <div className="md:col-span-3">
                     <div className="mb-1.5 flex items-center justify-between">

@@ -100,8 +100,24 @@ def reason_node(state: GraphState) -> GraphState:
         usage = {**usage, "provider": getattr(provider, "name", resource.provider), "model": resource.model}
         return {"result": result, "usage": usage}
     except Exception as e:
-        # Real provider (Ollama / Claude / ChatGPT) unreachable or errored →
-        # fall back to the deterministic stub so the platform always responds.
+        # Primary provider errored (e.g. Gemini 503 on the free tier, or a cloud
+        # timeout). Prefer a REAL local fallback (Ollama) over the deterministic
+        # stub so quality degrades gracefully — Gemini quality when available,
+        # a real local draft when it's not, stub only if local is also down.
+        import os
+
+        if resource.provider != "ollama":
+            try:
+                from ..llm.ollama_provider import OllamaProvider
+
+                fb_model = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen3")
+                fb = OllamaProvider(fb_model)
+                result, usage = fb.generate_json(system, user, resource.temperature)
+                usage = {**usage, "provider": "ollama", "model": fb_model, "fallback_from": resource.provider, "error": str(e)[:200]}
+                return {"result": result, "usage": usage}
+            except Exception:
+                pass  # local fallback also unavailable → stub below
+
         from ..llm.stub_provider import StubProvider
 
         result, usage = StubProvider(requested=resource.provider, model=resource.model).synthesize(state)

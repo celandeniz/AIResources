@@ -34,6 +34,8 @@ import { ReportsModule } from './modules/reports/reports.controller';
 import { StatusReportsModule } from './modules/status-reports/status-reports.controller';
 import { StyleModule } from './modules/style/style.controller';
 import { CodeTasksModule } from './modules/code-tasks/code-tasks.controller';
+import { ReplySettingsModule } from './modules/reply-settings/reply-settings.controller';
+import { MeetingsModule } from './modules/meetings/meetings.controller';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -70,6 +72,8 @@ import { HealthController } from './health.controller';
     StatusReportsModule,
     StyleModule,
     CodeTasksModule,
+    ReplySettingsModule,
+    MeetingsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],

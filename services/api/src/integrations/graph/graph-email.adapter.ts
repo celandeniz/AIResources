@@ -34,7 +34,11 @@ export class GraphEmailAdapter implements ConnectorAdapter {
     if (tool !== 'send_email' && tool !== 'send_proposal') {
       return { ok: false, detail: `GraphEmailAdapter cannot execute ${tool}` };
     }
-    const mailbox = this.mailbox(conn);
+    // Reply identity: if the draft carries an explicit from_email, send from that
+    // mailbox instead of the connection's default (keeps the same sendMail path).
+    const mailbox = (typeof args.from_email === 'string' && args.from_email.trim())
+      ? (args.from_email as string).trim()
+      : this.mailbox(conn);
     const to = ((args.to as string[]) ?? (args.recipients as string[]) ?? []).filter(Boolean);
     const message = {
       subject: (args.subject as string) ?? '(no subject)',

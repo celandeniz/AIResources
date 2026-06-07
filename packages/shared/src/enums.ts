@@ -59,7 +59,7 @@ export type ToolCallStatus = (typeof TOOL_CALL_STATUSES)[number];
 export const USER_ROLES = ['admin', 'manager', 'consultant', 'viewer'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
-export const LLM_PROVIDERS = ['ollama', 'anthropic', 'openai', 'azure_openai'] as const;
+export const LLM_PROVIDERS = ['ollama', 'anthropic', 'openai', 'azure_openai', 'gemini'] as const;
 export type LlmProvider = (typeof LLM_PROVIDERS)[number];
 
 export const INTEGRATION_TYPES = [

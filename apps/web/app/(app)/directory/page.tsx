@@ -14,10 +14,11 @@ import { Input } from '../../../components/ui/input';
 import { Cpu, ShieldCheck, Mail } from 'lucide-react';
 
 const PROVIDERS: Record<string, string[]> = {
-  ollama: ['qwen3', 'deepseek-r1', 'gemma3', 'gpt-oss:20b', 'mistral-small'],
+  ollama: ['qwen3', 'qwen2.5-coder:14b', 'deepseek-r1', 'gemma3', 'gpt-oss:20b', 'mistral-small'],
   anthropic: ['claude-opus-4-8', 'claude-sonnet-4-6'],
   openai: ['gpt-4o', 'gpt-4o-mini'],
   azure_openai: ['gpt-4o'],
+  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
 };
 
 export default function DirectoryPage() {
@@ -67,9 +68,10 @@ function ResourceGroup({ title, count, items, onSaved }: { title: string; count:
 }
 
 function ResourceCard({ r, onSaved }: { r: any; onSaved: () => void }) {
+  const PROVIDER_LABEL: Record<string, string> = { anthropic: 'Claude', openai: 'ChatGPT', azure_openai: 'Azure', gemini: 'Gemini' };
   const tierBadge = r.llm_provider === 'ollama'
     ? <Badge variant="success">free · local</Badge>
-    : <Badge variant="default">{r.llm_provider === 'anthropic' ? 'Claude' : 'ChatGPT'}</Badge>;
+    : <Badge variant="default">{PROVIDER_LABEL[r.llm_provider] ?? r.llm_provider}</Badge>;
   const category = resourceCategory(r);
   const skill = resourceSkill(r);
   return (
@@ -165,6 +167,7 @@ function ResourceEditor({ r, onSaved }: { r: any; onSaved: () => void }) {
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="openai">OpenAI (ChatGPT)</option>
               <option value="azure_openai">Azure OpenAI</option>
+              <option value="gemini">Google Gemini</option>
             </Select>
           </div>
           <div>

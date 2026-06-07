@@ -6,6 +6,26 @@ import { emitStreamEvent } from '../../common/events';
 import { detectSystemEmail } from '../../common/system-email';
 import type { ActivityChannel, Priority } from '@dynops/shared';
 
+// Owner identities — addresses the platform OWNER sends from. When an inbound
+// email is FROM the owner (i.e. the owner replied to the thread himself), the AI
+// must NOT draft a reply — otherwise it would address the owner to himself.
+// Configurable via OWNER_EMAILS (comma list); falls back to WATCH_OWNER_EMAIL.
+const OWNER_EMAILS = (process.env.OWNER_EMAILS ?? process.env.WATCH_OWNER_EMAIL ?? '')
+  .split(',')
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
+function extractEmail(s?: string | null): string {
+  if (!s) return '';
+  const m = s.match(/<([^>]+)>/);
+  return (m ? m[1] : s).trim().toLowerCase();
+}
+
+function isOwnerSender(from?: string | null): boolean {
+  const e = extractEmail(from);
+  return !!e && OWNER_EMAILS.includes(e);
+}
+
 export interface ListFilters {
   status?: string;
   channel?: string;
@@ -111,6 +131,13 @@ export class ActivitiesService {
       ? detectSystemEmail({ from: input.from, subject: input.subject, body: input.body, headers: input.headers })
       : { system: false as const, reason: undefined };
 
+    // Owner-authored mail: the owner replied to the thread himself. Record it
+    // (so the thread/history is complete) but do NOT route to an AI — a draft
+    // would be addressed to the owner himself ("kendine hitap"). System-mail
+    // takes precedence; otherwise owner replies are marked completed.
+    const ownerReply = input.channel === 'email' && !sys.system && isOwnerSender(input.from);
+    const skipDraft = sys.system || ownerReply;
+
     const activity = await this.prisma.activities.create({
       data: {
         source_id: input.source_id,
@@ -121,25 +148,30 @@ export class ActivitiesService {
         category: input.category,
         customer_id: customerId,
         project_id: input.project_id,
-        status: sys.system ? 'archived' : 'new',
+        status: sys.system ? 'archived' : ownerReply ? 'completed' : 'new',
+        completed_at: ownerReply ? new Date() : undefined,
         metadata: {
           from: input.from,
           to: input.to ?? [],
           cc: input.cc ?? [],
           conversation_id: input.conversation_id ?? null,
           ...(sys.system ? { system_generated: true, system_reason: sys.reason } : {}),
+          ...(ownerReply ? { owner_reply: true } : {}),
         },
       },
     });
     if (input.from || input.body) {
+      // Owner's own message is an outbound/internal authored reply, not an
+      // external inbound one.
       await this.prisma.messages.create({
-        data: { activity_id: activity.id, direction: 'inbound', channel: input.channel, author_type: 'external', from_address: input.from, subject: input.subject, body: input.body },
+        data: { activity_id: activity.id, direction: ownerReply ? 'outbound' : 'inbound', channel: input.channel, author_type: ownerReply ? 'user' : 'external', from_address: input.from, subject: input.subject, body: input.body },
       });
     }
-    await this.audit.log({ actorType: 'system', action: 'ingest', entityType: 'activities', entityId: activity.id, activityId: activity.id, summary: sys.system ? `Ingested from ${input.channel} — skipped (system-generated: ${sys.reason})` : `Ingested from ${input.channel}` });
+    const skipReason = sys.system ? `system-generated: ${sys.reason}` : ownerReply ? 'owner replied — no self-addressed draft' : null;
+    await this.audit.log({ actorType: 'system', action: 'ingest', entityType: 'activities', entityId: activity.id, activityId: activity.id, summary: skipReason ? `Ingested from ${input.channel} — skipped (${skipReason})` : `Ingested from ${input.channel}` });
     emitStreamEvent({ type: 'activity', workspaceId: activity.workspace_id, payload: activity });
-    // Skip drafting/approval for system-generated mail.
-    if (sys.system) return { activityId: activity.id, skipped: true, reason: sys.reason };
+    // Skip drafting/approval for system-generated mail AND owner self-replies.
+    if (skipDraft) return { activityId: activity.id, skipped: true, reason: skipReason };
     const jobId = await this.queue.enqueueActivity(activity.id);
     return { activityId: activity.id, jobId };
   }

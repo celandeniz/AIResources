@@ -8,5 +8,6 @@ import { IntegrationsModule } from '../../integrations/integrations.controller';
   imports: [IntegrationsModule],
   controllers: [ApprovalsController, ToolCallsController],
   providers: [ApprovalsService],
+  exports: [ApprovalsService],
 })
 export class ApprovalsModule {}

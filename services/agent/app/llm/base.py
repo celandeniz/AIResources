@@ -58,5 +58,9 @@ def get_provider(provider: str, model: str) -> LLMProvider:
         from .azure_openai_provider import AzureOpenAIProvider
 
         return AzureOpenAIProvider(model)
+    if provider == "gemini" and (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+        from .gemini_provider import GeminiProvider
+
+        return GeminiProvider(model)
     # No credentials configured → deterministic stub (keeps the platform runnable).
     return StubProvider(requested=provider, model=model)

@@ -1,4 +1,5 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Module } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Module, Controller, Get, Post } from '@nestjs/common';
+import { Roles } from '../auth/decorators';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivitiesService } from '../modules/inbox/activities.service';
 import { InboxModule } from '../modules/inbox/inbox.module';
@@ -104,6 +105,34 @@ export class IngestionPoller implements OnModuleInit, OnModuleDestroy {
     else if (capped.length) this.logger.log(`Outlook ${conn.config.mailbox}: ingested ${capped.length} new message(s)`);
   }
 
+  // ── On-demand "pull latest from sources now" (Approval Center refresh) ──────
+  // Runs a poll cycle immediately, then returns each pollable source with its
+  // freshest status — which sources + when they were last synced.
+  async syncNow(): Promise<{ ok: boolean; graphConfigured: boolean; syncedAt: string; sources: any[] }> {
+    if (graphConfigured()) {
+      await this.tick();
+    }
+    return { ok: true, graphConfigured: graphConfigured(), syncedAt: new Date().toISOString(), sources: await this.listSources() };
+  }
+
+  // Pollable connections + when each was last pulled (for the refresh UI).
+  async listSources(): Promise<any[]> {
+    const rows = await this.prisma.integrations.findMany({
+      where: { type: { in: ['graph_email', 'graph_teams'] } },
+      orderBy: [{ type: 'asc' }, { name: 'asc' }],
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      type: r.type,
+      is_mock: r.is_mock,
+      status: r.status,
+      last_synced_at: r.last_synced_at,
+      last_error: r.last_error,
+      mailbox: (r.config as any)?.mailbox ?? null,
+    }));
+  }
+
   private async pollTeams(row: any) {
     const conn = this.toConn(row);
     const sourceId = await this.ensureSource(row.id, row.name, 'teams');
@@ -126,8 +155,27 @@ export class IngestionPoller implements OnModuleInit, OnModuleDestroy {
   }
 }
 
+// Source-refresh API for the Approval Center: list pollable sources + their
+// last-sync time, and trigger an immediate re-pull.
+@Controller('sources')
+class SourcesController {
+  constructor(private readonly poller: IngestionPoller) {}
+
+  @Get()
+  list() {
+    return this.poller.listSources();
+  }
+
+  @Roles('consultant')
+  @Post('sync')
+  sync() {
+    return this.poller.syncNow();
+  }
+}
+
 @Module({
   imports: [InboxModule],
+  controllers: [SourcesController],
   providers: [IngestionPoller],
 })
 export class IngestionModule {}
