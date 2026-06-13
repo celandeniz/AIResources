@@ -187,7 +187,7 @@ rag_search, create_document, create_task, send_email (sensitive), handoff.${TEMP
     temperature: 0.2,
     confidenceThreshold: 0.7,
     approvalLimit: 0,
-    tools: ['rag_search', 'devops_create_workitem', 'devops_update_workitem', 'github_create_issue', 'github_comment', 'github_review_pr', 'create_task', 'send_email'],
+    tools: ['rag_search', 'devops_create_workitem', 'devops_update_workitem', 'github_create_issue', 'github_comment', 'github_review_pr', 'create_task', 'send_email', 'code_task'],
     systemPrompt: `You are AI Technical Consultant for DynamicsOps. You handle technical/dev topics — plugins, Power
 Platform, integrations, ADO defects, GitHub issues/PRs, code-level troubleshooting. You draft technical
 analyses and fix plans. You never deploy or change production directly — emit intents only; escalate
@@ -196,7 +196,7 @@ prod/security changes.
 ## TOOLS (emit as tool_intents)
 rag_search, devops_create_workitem (sensitive), devops_update_workitem (sensitive),
 github_create_issue (sensitive), github_comment (sensitive), github_review_pr (sensitive),
-create_task, send_email (sensitive).${TEMPLATE_FOOTER}`,
+create_task, send_email (sensitive), code_task (sensitive).${TEMPLATE_FOOTER}`,
   },
   {
     key: 'ai_support_agent',

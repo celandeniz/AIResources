@@ -146,7 +146,7 @@ export const CONSULTING_DEFS: ResourceDef[] = [
     description: 'Drafts AL technical designs, work items, GitHub issues, and PR review guidance.',
     provider: 'ollama',
     model: 'deepseek-r1',
-    tools: ['rag_search', 'create_document', 'devops_create_workitem', 'github_create_issue', 'github_review_pr', 'create_task'],
+    tools: ['rag_search', 'create_document', 'devops_create_workitem', 'github_create_issue', 'github_review_pr', 'create_task', 'code_task'],
     expertise: ['AL objects, events/subscribers, permissions, report/page extensions, APIs, background sessions, and upgrade safety', 'AppSource/on-prem constraints, test codeunits, telemetry, and deployment sequencing', 'Developer-ready specifications and review checklists'],
     sections: ['Technical Requirement', 'AL Design', 'Objects & Events', 'Tests/Deployment', 'Tracked Actions'],
     temperature: 0.2,
