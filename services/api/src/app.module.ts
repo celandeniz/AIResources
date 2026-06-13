@@ -17,6 +17,7 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.controller';
 import { IntegrationsModule } from './integrations/integrations.controller';
 import { IngestionModule } from './integrations/ingestion.poller';
 import { EmailWatchModule } from './integrations/email-watch.service';
+import { AdoIngestionModule } from './integrations/ado-ingestion.service';
 import { WorkspacesModule } from './modules/workspaces/workspaces.controller';
 import { BacktestModule } from './modules/backtest/backtest.controller';
 import { NotificationsModule } from './modules/notifications/notifications.controller';
@@ -55,6 +56,7 @@ import { HealthController } from './health.controller';
     IntegrationsModule,
     IngestionModule,
     EmailWatchModule,
+    AdoIngestionModule,
     WorkspacesModule,
     BacktestModule,
     NotificationsModule,

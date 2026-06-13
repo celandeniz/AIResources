@@ -404,6 +404,36 @@ export class CosmosTimelogService {
     };
   }
 
+  // ── fetchTasksChangedSince ─────────────────────────────────────────────────
+  // Returns devops tasks whose changed_at or created_at > sinceMs (epoch ms).
+  // Used by the ADO ingestion service to pull recent changes into activities.
+  async fetchTasksChangedSince(opts: { sinceMs: number; cap?: number }): Promise<CosmosTask[]> {
+    const cap = opts.cap ?? 25;
+    if (this.mockMode) return MOCK_TASKS.slice(0, cap);
+    const C = COSMOS_MAP.DEVOPS_TASK;
+    const sinceISO = new Date(opts.sinceMs).toISOString();
+    // Cosmos SQL TOP only accepts an integer literal, not a parameter — embed it.
+    const q = {
+      query: `SELECT TOP ${cap} * FROM c
+              WHERE c.${C.DOC_TYPE} = @dt
+                AND (c.${C.CHANGED_AT} > @since OR c.${C.CREATED_AT} > @since)
+              ORDER BY c.${C.CHANGED_AT} DESC`,
+      parameters: [
+        { name: '@dt', value: C.DOC_TYPE_VALUE },
+        { name: '@since', value: sinceISO },
+      ],
+    };
+    try {
+      const { resources } = await this.container(COSMOS_MAP.CONTAINERS.DEVOPS_TASKS).items
+        .query(q)
+        .fetchAll();
+      return (resources as any[]).map((r) => this.mapTask(r));
+    } catch (e) {
+      this.logger.error('fetchTasksChangedSince failed', e);
+      return [];
+    }
+  }
+
   // ── fetchProjectTasks ──────────────────────────────────────────────────────
   // DevOps work items for a single project (used by the project status report).
   // Reuses mapTask + COSMOS_MAP. Mock mode returns MOCK_TASKS filtered by project.
