@@ -9,7 +9,7 @@ const AGENT_URL = process.env.AGENT_URL ?? 'http://localhost:8000';
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN ?? 'dev-internal-token';
 
 // Actions that carry an AI-drafted outbound answer (the "AI answers" filter).
-const MESSAGE_ACTIONS = ['send_email', 'send_proposal', 'send_whatsapp_message', 'send_teams_message', 'post_message'];
+export const MESSAGE_ACTIONS = ['send_email', 'send_proposal', 'send_whatsapp_message', 'send_teams_message', 'post_message'];
 
 // Read the AI's draft answer text out of a tool_call's args (the field name
 // varies by action).
