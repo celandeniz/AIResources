@@ -154,6 +154,9 @@ async function main() {
     { type: 'business_central', name: 'BC: Dynamics Ops Bilgi Tek Ltd Sti (mock)', direction: 'both', config: { tenant: '7fa2357e-26f2-4174-8e16-a713981356b8', environment: 'Production', company: 'Dynamics Ops Bilgi Tek Ltd Sti' } },
     { type: 'business_central', name: 'BC: Dynamics Ops (mock)', direction: 'both', config: { tenant: '7fa2357e-26f2-4174-8e16-a713981356b8', environment: 'Production', company: 'Dynamics Ops' } },
     { type: 'whatsapp', name: 'WhatsApp Business (mock)', direction: 'both', config: { phone: '+1000000000' } },
+    // Support mailbox — seeded as is_mock=true; admin flips is_mock=false + sets
+    // Graph Mail.Read/Send credentials to go live. Paired with reply_settings below.
+    { type: 'graph_email', name: 'Support Mailbox', direction: 'both', config: { mailbox: 'support@dynamicsops.com' } },
   ];
   const integrationByName: Record<string, string> = {};
   for (const i of integrations) {
@@ -198,6 +201,45 @@ async function main() {
     },
   });
   integrationByName[cosmosName] = cosmosRow.id;
+
+  // ── reply_settings — Support Mailbox auto-reply config ────────────────────
+  // One reply_settings row for the Support Mailbox integration (no unique on
+  // integration_id so we findFirst then update-or-create).
+  // NOTE: support@ needs Graph Mail.Read/Send + is_mock=false to actually poll.
+  {
+    const supportIntegrationId = integrationByName['Support Mailbox'];
+    if (supportIntegrationId) {
+      const existingRs = await (prisma as any).reply_settings.findFirst({
+        where: { workspace_id: WS_ID, integration_id: supportIntegrationId },
+      });
+      if (existingRs) {
+        await (prisma as any).reply_settings.update({
+          where: { id: existingRs.id },
+          data: {
+            account_label: 'Support Mailbox',
+            auto_reply_enabled: true,
+            reply_as_name: 'DynamicsOps Support',
+            reply_as_email: 'support@dynamicsops.com',
+            signature: '--\nDynamicsOps Support',
+            resource_key: 'ai_support_agent',
+          },
+        });
+      } else {
+        await (prisma as any).reply_settings.create({
+          data: {
+            workspace_id: WS_ID,
+            integration_id: supportIntegrationId,
+            account_label: 'Support Mailbox',
+            auto_reply_enabled: true,
+            reply_as_name: 'DynamicsOps Support',
+            reply_as_email: 'support@dynamicsops.com',
+            signature: '--\nDynamicsOps Support',
+            resource_key: 'ai_support_agent',
+          },
+        });
+      }
+    }
+  }
 
   // ── Content / proposal templates ───────────────────────────────────────
   const templates: { name: string; type: string; content: string; metadata?: Prisma.InputJsonValue }[] = [
