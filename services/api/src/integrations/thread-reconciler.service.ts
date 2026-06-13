@@ -159,7 +159,9 @@ export class ThreadReconcilerService implements OnModuleInit, OnModuleDestroy {
         data: { status: 'cancelled', decided_at: new Date(), reviewer_id: null, decision_notes: note },
       });
       if ((ap as any).tool_call?.id) {
-        await this.prisma.tool_calls.update({ where: { id: (ap as any).tool_call.id }, data: { status: 'cancelled' } });
+        // 'skipped' = not executed (a human handled the thread). 'cancelled' is
+        // not a valid tool_call_status enum value.
+        await this.prisma.tool_calls.update({ where: { id: (ap as any).tool_call.id }, data: { status: 'skipped' } });
       }
       await this.prisma.audit_logs.create({
         data: {
