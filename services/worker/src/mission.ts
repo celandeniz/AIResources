@@ -130,12 +130,137 @@ export async function executeReadyTasks(missionId: string) {
     const done = fresh.filter((t) => t.status === 'done').length;
     await (prisma as any).missions.update({
       where: { id: missionId },
-      data: { status: 'done', summary: { tasks: fresh.length, done, completedAt: new Date().toISOString() } },
+      data: { status: 'done', summary: { ...((mission.summary as any) ?? {}), tasks: fresh.length, done, completedAt: new Date().toISOString() } },
     });
     console.log(`[mission] ${mission.title}: DONE (${done}/${fresh.length} tasks)`);
+    await writeBackToParent(missionId).catch((e) => console.warn(`[mission] write-back failed for ${missionId}:`, (e as Error).message));
   } else if (!ready.length && !open.some((t) => t.status === 'in_progress')) {
     // All remaining are open but blocked with no in-flight work → blocked.
     await (prisma as any).missions.update({ where: { id: missionId }, data: { status: 'blocked' } });
+  }
+}
+
+// On mission completion, write the synthesis back to the originating work item /
+// support thread as an approval-gated action (devops_comment | send_email). Mirrors
+// the synthetic agent_run → tool_call → approval chain from code-tasks.controller.
+// RAW prisma client (no tenant guard) → stamp workspace_id on every create.
+// Never throws — must not break mission completion.
+async function writeBackToParent(missionId: string) {
+  try {
+    const mission = await (prisma as any).missions.findUnique({ where: { id: missionId } });
+    if (!mission) return;
+    const summary = (mission.summary as any) ?? {};
+    const parent = summary.parent;
+    if (!parent || parent.written_back) return;
+
+    const wsId = mission.workspace_id;
+
+    // ── 1. Find the synthesis deliverable (lead-synthesis task's outbound draft) ─
+    const tasks = await prisma.tasks.findMany({ where: { mission_id: missionId } });
+    const synthTask = tasks.find((t) => (t.metadata as any)?.role === 'lead-synthesis');
+    let synthesis = '';
+    const synthActivityId = (synthTask?.metadata as any)?.activity_id as string | undefined;
+    if (synthActivityId) {
+      const msg = await prisma.messages.findFirst({
+        where: { activity_id: synthActivityId, direction: 'outbound' },
+        orderBy: { created_at: 'desc' },
+      });
+      if (msg?.body) synthesis = msg.body;
+    }
+    // Fallback: most recent outbound message across all the mission's task activities.
+    if (!synthesis) {
+      const actIds = tasks
+        .map((t) => (t.metadata as any)?.activity_id as string | undefined)
+        .filter((x): x is string => Boolean(x));
+      if (actIds.length) {
+        const msg = await prisma.messages.findFirst({
+          where: { activity_id: { in: actIds }, direction: 'outbound' },
+          orderBy: { created_at: 'desc' },
+        });
+        if (msg?.body) synthesis = msg.body;
+      }
+    }
+    if (!synthesis) synthesis = mission.title;
+    synthesis = synthesis.slice(0, 6000);
+
+    // ── 2. Build the write-back action ────────────────────────────────────────
+    let action: string;
+    let args: Record<string, any>;
+    let risk: string;
+    if (parent.channel === 'devops') {
+      action = 'devops_comment';
+      args = { workItemId: parent.ado_id, text: synthesis };
+      risk = 'low';
+    } else {
+      action = 'send_email';
+      args = {
+        to: [parent.from].filter(Boolean),
+        subject: `Re: ${parent.subject ?? mission.title}`,
+        body: synthesis,
+      };
+      risk = 'medium';
+    }
+
+    // ── 3. Resolve a resource for the agent_run FK (ai_resource_id is required) ──
+    let resourceId: string | null = mission.lead_resource_id ?? null;
+    if (!resourceId) {
+      const anyResource = await prisma.ai_resources.findFirst({ where: { status: 'active', workspace_id: wsId } });
+      if (!anyResource) {
+        console.warn(`[mission] write-back skipped for ${missionId}: no resource for agent_run`);
+        return;
+      }
+      resourceId = anyResource.id;
+    }
+
+    // ── 4. Approval-gated chain (synthetic agent_run → tool_call → approval) ─────
+    const agentRun = await prisma.agent_runs.create({
+      data: {
+        workspace_id: wsId,
+        activity_id: parent.activity_id,
+        ai_resource_id: resourceId,
+        llm_provider: 'ollama',
+        llm_model: 'qwen3',
+        status: 'succeeded',
+        input: { mission_id: missionId } as any,
+        output: {} as any,
+        tools_used: [action] as any,
+      },
+    });
+    const toolCall = await prisma.tool_calls.create({
+      data: {
+        workspace_id: wsId,
+        agent_run_id: agentRun.id,
+        name: action,
+        args: args as any,
+        requires_approval: true,
+        risk_level: risk as any,
+        status: 'awaiting_approval',
+        sequence: 0,
+      },
+    });
+    await prisma.approvals.create({
+      data: {
+        workspace_id: wsId,
+        activity_id: parent.activity_id,
+        agent_run_id: agentRun.id,
+        tool_call_id: toolCall.id,
+        action,
+        payload: { ...args, mission_id: missionId } as any,
+        risk_level: risk as any,
+        reason: `Mission "${mission.title}" çözümü — ${action}`,
+        status: 'pending',
+        expires_at: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      },
+    });
+
+    // ── 5. Mark written-back (merge into existing summary) ──────────────────────
+    await (prisma as any).missions.update({
+      where: { id: missionId },
+      data: { summary: { ...summary, parent: { ...parent, written_back: true } } },
+    });
+    console.log(`[mission] ${mission.title}: wrote synthesis back via ${action} (approval-gated)`);
+  } catch (e) {
+    console.warn(`[mission] writeBackToParent error for ${missionId}:`, (e as Error).message);
   }
 }
 

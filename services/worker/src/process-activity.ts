@@ -2,8 +2,16 @@ import { PrismaClient } from '@dynops/db';
 import { TOOL_REGISTRY, isKnownTool, type AgentRunRequest, type ToolName } from '@dynops/shared';
 import { matchRoutingRule, type RuleRow } from './rules';
 import { runAgent, executeToolCallViaApi } from './agent-client';
+import { planAndStartMission } from './mission';
 
 const prisma = new PrismaClient();
+
+// Topic missions: every ADO work-item / support@ email auto-spawns a Mission Pod.
+const ENABLE_TOPIC_MISSIONS = process.env.ENABLE_TOPIC_MISSIONS !== 'false';
+const SUPPORT_MAILBOXES = (process.env.SUPPORT_MAILBOXES ?? 'support@dynamicsops.com')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
 
 // Actions that carry an AI-drafted reply — we prepare 3 toned alternatives for these.
 const MESSAGE_ACTIONS = new Set(['send_email', 'send_proposal', 'send_whatsapp_message', 'send_teams_message', 'post_message']);
@@ -210,6 +218,58 @@ export async function processActivity(activityId: string) {
 
   const resource = await prisma.ai_resources.findUnique({ where: { id: resourceId } });
   if (!resource) throw new Error(`ai_resource ${resourceId} not found`);
+
+  // ── 1b. Topic Mission auto-spawn (ADO work item / support@ email) ──────────
+  // Every Azure DevOps activity and every support-mailbox email becomes a Mission
+  // Pod (plan → specialists → synthesis). Mission specialist/synthesis activities
+  // are channel:'mission' with metadata.mission=true → excluded (no recursion).
+  const meta0 = (activity.metadata as any) ?? {};
+  const toList = ([] as string[])
+    .concat(meta0.to ?? [], meta0.cc ?? [])
+    .map((a: string) => String(a).toLowerCase());
+  const isSupportEmail = activity.channel === 'email' && toList.some((a) => SUPPORT_MAILBOXES.includes(a));
+  const missionEligible =
+    ENABLE_TOPIC_MISSIONS &&
+    !meta0.mission &&
+    !meta0.mission_spawned &&
+    (activity.channel === 'devops' || isSupportEmail);
+  if (missionEligible && resourceId) {
+    const adoId = activity.channel === 'devops' ? String(activity.external_id ?? '').replace(/^ado:/, '') : null;
+    const mission = await (prisma as any).missions.create({
+      data: {
+        workspace_id: wsId,
+        title: (activity.subject ?? 'Untitled topic').slice(0, 240),
+        goal: activity.body ?? activity.subject ?? '',
+        status: 'planning',
+        lead_resource_id: resourceId,
+        summary: {
+          parent: {
+            activity_id: activity.id,
+            channel: activity.channel,
+            conversation_id: meta0.conversation_id ?? null,
+            ado_id: adoId,
+            from: meta0.from ?? null,
+            subject: activity.subject ?? null,
+          },
+        },
+      },
+    });
+    await prisma.activities.update({
+      where: { id: activityId },
+      data: { status: 'in_progress', metadata: { ...meta0, mission_spawned: true, mission_id: mission.id } },
+    });
+    await audit({
+      workspaceId: wsId,
+      action: 'route',
+      entityType: 'missions',
+      entityId: mission.id,
+      activityId,
+      summary: `Auto-spawned mission for ${activity.channel} topic`,
+    });
+    await planAndStartMission(mission.id);
+    return; // skip the single-resource draft; the mission drives resolution
+  }
+
   const threshold = Number(resource.confidence_threshold);
   const approvalLimit = resource.approval_limit !== null ? Number(resource.approval_limit) : null;
 
