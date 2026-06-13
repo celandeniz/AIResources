@@ -7,6 +7,7 @@ import { GraphEmailAdapter } from './graph/graph-email.adapter';
 import { GraphTeamsAdapter } from './graph/graph-teams.adapter';
 import { graphConfigured } from './graph/graph-client';
 import { whatsAppAdapter, whatsappConfigured } from './whatsapp/whatsapp.adapter';
+import { devOpsAdapter, devopsConfigured } from './devops/devops.adapter';
 import { runCodeTask } from './opencode/opencode.client';
 import { TOOL_REGISTRY, isKnownTool, IntegrationKind, ToolName } from '@dynops/shared';
 import { tenantStore } from '../common/tenant';
@@ -27,6 +28,7 @@ function pickAdapter(kind: IntegrationKind, conn: ConnectionInfo | null): Connec
     if (kind === 'whatsapp' && whatsappConfigured()) {
       return whatsAppAdapter;
     }
+    if (kind === 'devops' && devopsConfigured()) return devOpsAdapter;
   }
   return getAdapter(kind);
 }
