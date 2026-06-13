@@ -8,6 +8,7 @@ import { GraphTeamsAdapter } from './graph/graph-teams.adapter';
 import { graphConfigured } from './graph/graph-client';
 import { tenantStore } from '../common/tenant';
 import type { ConnectionInfo } from './contracts';
+import { ThreadReconcilerService } from './thread-reconciler.service';
 
 // Polls live (is_mock=false) Microsoft Graph connections for new mail / Teams
 // messages and feeds them into the Activity Inbox (dedup + enqueue via ingest).
@@ -159,23 +160,36 @@ export class IngestionPoller implements OnModuleInit, OnModuleDestroy {
 // last-sync time, and trigger an immediate re-pull.
 @Controller('sources')
 class SourcesController {
-  constructor(private readonly poller: IngestionPoller) {}
+  constructor(
+    private readonly poller: IngestionPoller,
+    private readonly reconciler: ThreadReconcilerService,
+  ) {}
 
   @Get()
   list() {
     return this.poller.listSources();
   }
 
+  // Pull latest from sources AND supersede threads a human already answered.
   @Roles('consultant')
   @Post('sync')
-  sync() {
-    return this.poller.syncNow();
+  async sync() {
+    const synced = await this.poller.syncNow();
+    const reconciled = await this.reconciler.reconcileOnce();
+    return { ...synced, reconciled };
+  }
+
+  // Run only the thread reconciler (supersede handled threads) on demand.
+  @Roles('consultant')
+  @Post('reconcile')
+  reconcile() {
+    return this.reconciler.reconcileOnce();
   }
 }
 
 @Module({
   imports: [InboxModule],
   controllers: [SourcesController],
-  providers: [IngestionPoller],
+  providers: [IngestionPoller, ThreadReconcilerService],
 })
 export class IngestionModule {}
