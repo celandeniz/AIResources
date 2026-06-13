@@ -109,6 +109,9 @@ services:
       EMAIL_WATCH_ENABLED: ${EMAIL_WATCH_ENABLED:-true}
       EMAIL_WATCH_SLA_HOURS: ${EMAIL_WATCH_SLA_HOURS:-48}
       WATCH_TEAM_DOMAIN: ${WATCH_TEAM_DOMAIN:-dynamicsops.com}
+      # Topic missions (ADO work item / support@ email → Mission Pod)
+      ENABLE_TOPIC_MISSIONS: ${ENABLE_TOPIC_MISSIONS:-true}
+      SUPPORT_MAILBOXES: ${SUPPORT_MAILBOXES:-support@dynamicsops.com}
       EMAIL_WATCH_TICK_MS: ${EMAIL_WATCH_TICK_MS:-1800000}
       # Owner identities — inbound mail FROM these is the owner's own reply; the
       # AI must not draft a self-addressed response. Comma list; defaults to the
@@ -171,6 +174,9 @@ services:
       EMAIL_WATCH_ENABLED: ${EMAIL_WATCH_ENABLED:-true}
       EMAIL_WATCH_SLA_HOURS: ${EMAIL_WATCH_SLA_HOURS:-48}
       WATCH_TEAM_DOMAIN: ${WATCH_TEAM_DOMAIN:-dynamicsops.com}
+      # Topic missions (ADO work item / support@ email → Mission Pod)
+      ENABLE_TOPIC_MISSIONS: ${ENABLE_TOPIC_MISSIONS:-true}
+      SUPPORT_MAILBOXES: ${SUPPORT_MAILBOXES:-support@dynamicsops.com}
     depends_on:
       api:
         condition: service_started
