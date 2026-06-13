@@ -132,6 +132,11 @@ services:
       COSMOS_KEY: ${COSMOS_KEY:-}
       COSMOS_CONNECTION_STRING: ${COSMOS_CONNECTION_STRING:-}
       COSMOS_DB: ${COSMOS_DB:-DynOpsCore}
+      # Azure DevOps ingestion + real write adapter
+      ENABLE_ADO_INGESTION: ${ENABLE_ADO_INGESTION:-true}
+      ADO_POLL_INTERVAL_MS: ${ADO_POLL_INTERVAL_MS:-300000}
+      ADO_PAT: ${ADO_PAT:-}
+      ADO_ORGS: ${ADO_ORGS:-}
     volumes:
       - ${OBSIDIAN_VAULT_HOST_PATH:-./infra/empty-vault}:/vault:ro
     ports:
