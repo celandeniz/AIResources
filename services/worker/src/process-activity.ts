@@ -120,10 +120,21 @@ export async function processActivity(activityId: string) {
   if (!activity) throw new Error(`activity ${activityId} not found`);
   const wsId = activity.workspace_id; // tenant scope for all writes in this job
 
+  // Support-mailbox detection (computed up-front: it must exempt support@ from
+  // the passive email-watch gate below, and it drives the Topic Mission spawn).
+  const meta0 = (activity.metadata as any) ?? {};
+  const toList = ([] as string[])
+    .concat(meta0.to ?? [], meta0.cc ?? [])
+    .map((a: string) => String(a).toLowerCase());
+  const isSupportEmail = activity.channel === 'email' && toList.some((a) => SUPPORT_MAILBOXES.includes(a));
+
   // ── 0. Passive email watch — if owner is not a direct To recipient, park it ─
+  // Support-mailbox mail is exempt: support@ is intentionally a shared inbox the
+  // AI owns end-to-end (→ Topic Mission), so it must NOT be parked as "watching".
   if (
     process.env.EMAIL_WATCH_ENABLED !== 'false' &&
-    activity.channel === 'email'
+    activity.channel === 'email' &&
+    !(ENABLE_TOPIC_MISSIONS && isSupportEmail)
   ) {
     const owner = (process.env.WATCH_OWNER_EMAIL ?? 'deniz@dynamicsops.com').toLowerCase();
     const to: string[] = ((activity.metadata as any)?.to ?? []).map((x: string) => x.toLowerCase());
@@ -223,11 +234,7 @@ export async function processActivity(activityId: string) {
   // Every Azure DevOps activity and every support-mailbox email becomes a Mission
   // Pod (plan → specialists → synthesis). Mission specialist/synthesis activities
   // are channel:'mission' with metadata.mission=true → excluded (no recursion).
-  const meta0 = (activity.metadata as any) ?? {};
-  const toList = ([] as string[])
-    .concat(meta0.to ?? [], meta0.cc ?? [])
-    .map((a: string) => String(a).toLowerCase());
-  const isSupportEmail = activity.channel === 'email' && toList.some((a) => SUPPORT_MAILBOXES.includes(a));
+  // (meta0 / isSupportEmail are computed up-front, before the email-watch gate.)
   const missionEligible =
     ENABLE_TOPIC_MISSIONS &&
     !meta0.mission &&

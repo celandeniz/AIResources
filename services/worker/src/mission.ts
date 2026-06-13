@@ -128,12 +128,18 @@ export async function executeReadyTasks(missionId: string) {
   const open = fresh.filter((t) => t.status === 'open' || t.status === 'in_progress');
   if (!open.length) {
     const done = fresh.filter((t) => t.status === 'done').length;
-    await (prisma as any).missions.update({
-      where: { id: missionId },
+    // Atomic done-transition: the worker runs at concurrency 5, so two
+    // executeReadyTasks calls can interleave when the last tasks finish together.
+    // A conditional updateMany (status != 'done') lets exactly ONE call flip the
+    // mission and own the single write-back; the losers see count 0 and no-op.
+    const flipped = await (prisma as any).missions.updateMany({
+      where: { id: missionId, status: { not: 'done' } },
       data: { status: 'done', summary: { ...((mission.summary as any) ?? {}), tasks: fresh.length, done, completedAt: new Date().toISOString() } },
     });
-    console.log(`[mission] ${mission.title}: DONE (${done}/${fresh.length} tasks)`);
-    await writeBackToParent(missionId).catch((e) => console.warn(`[mission] write-back failed for ${missionId}:`, (e as Error).message));
+    if (flipped.count === 1) {
+      console.log(`[mission] ${mission.title}: DONE (${done}/${fresh.length} tasks)`);
+      await writeBackToParent(missionId).catch((e) => console.warn(`[mission] write-back failed for ${missionId}:`, (e as Error).message));
+    }
   } else if (!ready.length && !open.some((t) => t.status === 'in_progress')) {
     // All remaining are open but blocked with no in-flight work → blocked.
     await (prisma as any).missions.update({ where: { id: missionId }, data: { status: 'blocked' } });
