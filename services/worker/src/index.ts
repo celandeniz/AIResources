@@ -11,6 +11,7 @@ const ACTIVITY_QUEUE = 'activity.process';
 const BACKTEST_QUEUE = 'backtest.run';
 const PROACTIVE_QUEUE = 'proactive.run';
 const MISSION_QUEUE = 'mission.plan';
+const MISSION_ADVANCE_QUEUE = 'mission.advance';
 const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const connection = { url, maxRetriesPerRequest: null } as any;
 
@@ -32,6 +33,17 @@ const missionWorker = new Worker(
   MISSION_QUEUE,
   async (job) => {
     await planAndStartMission(job.data.missionId);
+  },
+  { connection, concurrency: 2 },
+);
+
+// Mission advancement — the API hands an approval-gated mission-task activity
+// back here once its approvals resolve, so the task graph can keep moving.
+const missionAdvanceWorker = new Worker(
+  MISSION_ADVANCE_QUEUE,
+  async (job) => {
+    const { activityId } = job.data as { activityId: string };
+    await advanceMissionFromActivity(activityId);
   },
   { connection, concurrency: 2 },
 );
@@ -59,12 +71,12 @@ const proactiveWorker = new Worker(
 
 const proactiveQueue = new Queue(PROACTIVE_QUEUE, { connection: { url } as any });
 
-for (const w of [worker, backtestWorker, proactiveWorker, missionWorker]) {
+for (const w of [worker, backtestWorker, proactiveWorker, missionWorker, missionAdvanceWorker]) {
   w.on('failed', (job, err) => console.error(`[worker] job ${job?.id} failed:`, err.message));
   w.on('completed', (job) => console.log(`[worker] job ${job.id} completed`));
 }
 
-console.log(`[worker] listening on "${ACTIVITY_QUEUE}" + "${BACKTEST_QUEUE}" + "${PROACTIVE_QUEUE}" + "${MISSION_QUEUE}" (redis ${url}, agent ${process.env.AGENT_URL})`);
+console.log(`[worker] listening on "${ACTIVITY_QUEUE}" + "${BACKTEST_QUEUE}" + "${PROACTIVE_QUEUE}" + "${MISSION_QUEUE}" + "${MISSION_ADVANCE_QUEUE}" (redis ${url}, agent ${process.env.AGENT_URL})`);
 
 let digestTimer: NodeJS.Timeout | undefined;
 if (process.env.ENABLE_DIGEST === 'true') {

@@ -5,6 +5,7 @@ export const ACTIVITY_QUEUE = 'activity.process';
 export const BACKTEST_QUEUE = 'backtest.run';
 export const PROACTIVE_QUEUE = 'proactive.run';
 export const MISSION_QUEUE = 'mission.plan';
+export const MISSION_ADVANCE_QUEUE = 'mission.advance';
 
 @Injectable()
 export class QueueService implements OnModuleDestroy {
@@ -13,6 +14,7 @@ export class QueueService implements OnModuleDestroy {
   readonly backtestQueue: Queue;
   readonly proactiveQueue: Queue;
   readonly missionQueue: Queue;
+  readonly missionAdvanceQueue: Queue;
 
   constructor() {
     const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
@@ -20,6 +22,7 @@ export class QueueService implements OnModuleDestroy {
     this.backtestQueue = new Queue(BACKTEST_QUEUE, { connection: { url } as any });
     this.proactiveQueue = new Queue(PROACTIVE_QUEUE, { connection: { url } as any });
     this.missionQueue = new Queue(MISSION_QUEUE, { connection: { url } as any });
+    this.missionAdvanceQueue = new Queue(MISSION_ADVANCE_QUEUE, { connection: { url } as any });
   }
 
   async enqueueProactive(automationId: string) {
@@ -40,6 +43,15 @@ export class QueueService implements OnModuleDestroy {
     return job.id;
   }
 
+  // Re-trigger the worker's mission-graph advancement after a mission-task
+  // activity is completed/closed outside the activity worker (e.g. an approval
+  // gate resolved in the API). Without this the mission would stall on tasks
+  // whose deliverable was approval-gated.
+  async enqueueMissionAdvance(activityId: string) {
+    const job = await this.missionAdvanceQueue.add('advance', { activityId }, { removeOnComplete: 500, removeOnFail: 500 });
+    return job.id;
+  }
+
   async enqueueActivity(activityId: string) {
     const job = await this.activityQueue.add(
       'process',
@@ -55,5 +67,6 @@ export class QueueService implements OnModuleDestroy {
     await this.backtestQueue.close();
     await this.proactiveQueue.close();
     await this.missionQueue.close();
+    await this.missionAdvanceQueue.close();
   }
 }

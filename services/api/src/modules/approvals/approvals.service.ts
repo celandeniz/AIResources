@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, ForbiddenException, BadRequestException 
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/audit.service';
 import { ExecutorService } from '../../integrations/executor.service';
+import { QueueService } from '../../queue/queue.service';
 import { emitStreamEvent } from '../../common/events';
 import type { AuthUser } from '../../auth/decorators';
 
@@ -91,6 +92,7 @@ export class ApprovalsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly executor: ExecutorService,
+    private readonly queue: QueueService,
   ) {}
 
   async list(filters: ApprovalFilters) {
@@ -426,7 +428,16 @@ export class ApprovalsService {
   private async advanceActivity(activityId: string) {
     const pending = await this.prisma.approvals.count({ where: { activity_id: activityId, status: 'pending' } });
     if (pending === 0) {
-      await this.prisma.activities.update({ where: { id: activityId }, data: { status: 'completed', completed_at: new Date() } });
+      const act = await this.prisma.activities.update({ where: { id: activityId }, data: { status: 'completed', completed_at: new Date() } });
+      // If this activity is a mission task whose deliverable was approval-gated,
+      // the worker never got to advance the mission graph (it only advances after
+      // the activity job, which finished in 'awaiting_approval'). Hand it back to
+      // the worker so the task is marked done and dependent tasks / the synthesis
+      // (and the final write-back to the originating ticket) can proceed.
+      const meta = (act.metadata as any) ?? {};
+      if (meta.mission_id && meta.task_id) {
+        await this.queue.enqueueMissionAdvance(activityId).catch(() => {});
+      }
     }
   }
 }
