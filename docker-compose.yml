@@ -114,6 +114,11 @@ services:
       # AI must not draft a self-addressed response. Comma list; defaults to the
       # watch-owner address. Add aliases here if the owner uses several.
       OWNER_EMAILS: ${OWNER_EMAILS:-deniz@dynamicsops.com}
+      # Thread reconciler — supersede pending AI reply-drafts once a human
+      # (owner/team) replies in the thread. Empty/true = on; needs Graph live.
+      ENABLE_THREAD_RECONCILER: ${ENABLE_THREAD_RECONCILER:-true}
+      THREAD_RECONCILER_TICK_MS: ${THREAD_RECONCILER_TICK_MS:-600000}
+      THREAD_RECONCILER_GRACE_MS: ${THREAD_RECONCILER_GRACE_MS:-120000}
       # Azure Cosmos DB — Time Log / Work Reports (read-only key; empty = mock mode)
       COSMOS_ENDPOINT: ${COSMOS_ENDPOINT:-}
       COSMOS_READONLY_KEY: ${COSMOS_READONLY_KEY:-}
