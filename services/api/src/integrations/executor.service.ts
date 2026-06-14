@@ -8,6 +8,8 @@ import { GraphTeamsAdapter } from './graph/graph-teams.adapter';
 import { graphConfigured } from './graph/graph-client';
 import { whatsAppAdapter, whatsappConfigured } from './whatsapp/whatsapp.adapter';
 import { devOpsAdapter, devopsConfigured } from './devops/devops.adapter';
+import { gitHubAdapter, githubConfigured } from './github/github.adapter';
+import { businessCentralAdapter, bcConfigured } from './bc/bc.adapter';
 import { runCodeTask } from './opencode/opencode.client';
 import { TOOL_REGISTRY, isKnownTool, IntegrationKind, ToolName } from '@dynops/shared';
 import { tenantStore } from '../common/tenant';
@@ -29,6 +31,8 @@ function pickAdapter(kind: IntegrationKind, conn: ConnectionInfo | null): Connec
       return whatsAppAdapter;
     }
     if (kind === 'devops' && devopsConfigured()) return devOpsAdapter;
+    if (kind === 'github' && githubConfigured()) return gitHubAdapter;
+    if (kind === 'business_central' && bcConfigured()) return businessCentralAdapter;
   }
   return getAdapter(kind);
 }
