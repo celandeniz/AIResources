@@ -140,6 +140,14 @@ services:
       ADO_POLL_INTERVAL_MS: ${ADO_POLL_INTERVAL_MS:-300000}
       ADO_PAT: ${ADO_PAT:-}
       ADO_ORGS: ${ADO_ORGS:-}
+      # Business Central (live write adapter) — OAuth client credentials
+      BC_TENANT_ID: ${BC_TENANT_ID:-}
+      BC_ENVIRONMENT: ${BC_ENVIRONMENT:-Production}
+      BC_CLIENT_ID: ${BC_CLIENT_ID:-}
+      BC_CLIENT_SECRET: ${BC_CLIENT_SECRET:-}
+      # GitHub (live write adapter)
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPOS: ${GITHUB_REPOS:-}
     volumes:
       - ${OBSIDIAN_VAULT_HOST_PATH:-./infra/empty-vault}:/vault:ro
     ports:
