@@ -9,6 +9,10 @@ Flutter client for the DynamicsOps AI Resource Platform.
 
 Push is a safe no-op until Firebase is configured.
 
+## Internal builds
+
+Cleartext HTTP is enabled (Android `usesCleartextTraffic`, iOS ATS `NSAllowsArbitraryLoads`) so internal-distribution builds can reach the API over `http://`. iOS bundle id is `com.dynamicsops.dynopsMobile` — create the Firebase iOS app with that exact id.
+
 ## Enable push (internal builds)
 1. Create a Firebase project (e.g. `dynops-mobile`), add Android app `com.dynamicsops.dynops_mobile` and iOS app.
 2. `dart pub global activate flutterfire_cli && flutterfire configure` — drops `google-services.json` / `GoogleService-Info.plist`.

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../core/api_error_view.dart';
 import '../../core/session.dart';
 import '../../core/sse.dart';
 import 'approvals_repository.dart';
@@ -67,7 +68,7 @@ class _ApprovalsScreenState extends ConsumerState<ApprovalsScreen> {
             ),
       body: list.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Hata: $e')),
+        error: (e, _) => ApiErrorView(error: e, onRetry: () => ref.invalidate(approvalsListProvider)),
         data: (items) => items.isEmpty
             ? const Center(child: Text('Bekleyen onay yok 🎉'))
             : RefreshIndicator(

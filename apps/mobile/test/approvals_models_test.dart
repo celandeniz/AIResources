@@ -22,5 +22,6 @@ void main() {
   test('unwraps {items:[…]} envelopes', () {
     expect(unwrapList([{'id': '1'}]).length, 1);
     expect(unwrapList({'items': [{'id': '1'}, {'id': '2'}]}).length, 2);
+    expect(unwrapList({'data': [{'id': '1'}, {'id': '2'}, {'id': '3'}]}).length, 3);
   });
 }

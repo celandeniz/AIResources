@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../core/api_error_view.dart';
 import '../../core/session.dart';
 import 'approvals_repository.dart';
 
@@ -40,7 +41,7 @@ class ApprovalDetailScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('Onay Detayı')),
       body: detail.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Hata: $e')),
+        error: (e, _) => ApiErrorView(error: e, onRetry: () => ref.invalidate(approvalDetailProvider(id))),
         data: (a) => ListView(padding: const EdgeInsets.all(16), children: [
           Text(a.subject ?? a.action, style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 8),

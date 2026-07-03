@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import '../../core/api_error_view.dart';
 import '../../core/session.dart';
 import '../approvals/approvals_models.dart';
 
@@ -77,7 +78,7 @@ class _MeetingsScreenState extends ConsumerState<MeetingsScreen> {
       appBar: AppBar(title: const Text('Toplantılar')),
       body: list.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Hata: $e')),
+        error: (e, _) => ApiErrorView(error: e, onRetry: () => ref.invalidate(meetingsProvider)),
         data: (items) => items.isEmpty
             ? const Center(child: Text('Bekleyen toplantı onayı yok'))
             : ListView.builder(

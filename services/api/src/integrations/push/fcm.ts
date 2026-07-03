@@ -62,7 +62,10 @@ export async function sendFcm(
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ message: { token: deviceToken, notification, data } }),
     });
-    if (res.status === 404 || res.status === 410) return 'unregistered';
+    if (res.status === 404 || res.status === 410) {
+      const text = await res.text().catch(() => '');
+      return text.includes('UNREGISTERED') || text.includes('registration-token-not-registered') ? 'unregistered' : 'error';
+    }
     if (!res.ok) {
       logger.warn(`FCM ${res.status}: ${(await res.text()).slice(0, 200)}`);
       return 'error';

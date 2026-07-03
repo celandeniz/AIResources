@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../core/api_error_view.dart';
 import '../../core/session.dart';
 
 final _summary = FutureProvider.autoDispose<Map<String, dynamic>>((ref) async {
@@ -27,7 +28,7 @@ class DashboardScreen extends ConsumerWidget {
       ]),
       body: summary.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Hata: $e')),
+        error: (e, _) => ApiErrorView(error: e, onRetry: () => ref.invalidate(_summary)),
         data: (s) => GridView.count(
           padding: const EdgeInsets.all(16),
           crossAxisCount: 2,

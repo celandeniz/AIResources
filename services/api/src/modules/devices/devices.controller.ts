@@ -14,7 +14,9 @@ class DevicesController {
     @Body() body: { platform: 'ios' | 'android'; token: string },
     @CurrentUser() user: AuthUser,
   ) {
-    if (!body?.token || !body?.platform) return { ok: false, detail: 'platform and token required' };
+    if (!body?.token || (body.platform !== 'ios' && body.platform !== 'android')) {
+      return { ok: false, detail: 'platform must be ios|android and token required' };
+    }
     const wsId = tenantStore.getStore()?.workspaceId ?? null;
     const row = await (this.prisma as any).device_tokens.upsert({
       where: { token: body.token },

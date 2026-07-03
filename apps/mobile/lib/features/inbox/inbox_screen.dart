@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../core/api_error_view.dart';
 import '../../core/session.dart';
 import '../approvals/approvals_models.dart';
 
-final _statusFilter = StateProvider<String?>((_) => null);
+final _statusFilter = StateProvider.autoDispose<String?>((_) => null);
 
 final activitiesProvider = FutureProvider.autoDispose<List<Map<String, dynamic>>>((ref) async {
   final api = ref.watch(sessionProvider)!.api;
@@ -45,22 +46,29 @@ class InboxScreen extends ConsumerWidget {
         Expanded(
           child: list.when(
             loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => Center(child: Text('Hata: $e')),
+            error: (e, _) => ApiErrorView(error: e, onRetry: () => ref.invalidate(activitiesProvider)),
             data: (items) => RefreshIndicator(
               onRefresh: () async => ref.invalidate(activitiesProvider),
-              child: ListView.builder(
-                itemCount: items.length,
-                itemBuilder: (_, i) {
-                  final a = items[i];
-                  final channel = (a['channel'] ?? '').toString();
-                  return ListTile(
-                    leading: CircleAvatar(child: Text(channel.isEmpty ? '?' : channel[0].toUpperCase())),
-                    title: Text((a['subject'] ?? '(konu yok)').toString(), maxLines: 1, overflow: TextOverflow.ellipsis),
-                    subtitle: Text('${channel.isEmpty ? '?' : channel} · ${a['status']}'),
-                    onTap: () => context.push('/inbox/${a['id']}'),
-                  );
-                },
-              ),
+              child: items.isEmpty
+                  ? ListView(
+                      children: const [
+                        SizedBox(height: 120),
+                        Center(child: Text('Gelen kutusu boş')),
+                      ],
+                    )
+                  : ListView.builder(
+                      itemCount: items.length,
+                      itemBuilder: (_, i) {
+                        final a = items[i];
+                        final channel = (a['channel'] ?? '').toString();
+                        return ListTile(
+                          leading: CircleAvatar(child: Text(channel.isEmpty ? '?' : channel[0].toUpperCase())),
+                          title: Text((a['subject'] ?? '(konu yok)').toString(), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('${channel.isEmpty ? '?' : channel} · ${a['status']}'),
+                          onTap: () => context.push('/inbox/${a['id']}'),
+                        );
+                      },
+                    ),
             ),
           ),
         ),

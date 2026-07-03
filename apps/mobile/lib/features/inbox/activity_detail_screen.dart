@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/api_error_view.dart';
 import '../../core/session.dart';
 
 final _activityDetail = FutureProvider.autoDispose.family<Map<String, dynamic>, String>((ref, id) async {
@@ -18,7 +19,7 @@ class ActivityDetailScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('Aktivite')),
       body: detail.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Hata: $e')),
+        error: (e, _) => ApiErrorView(error: e, onRetry: () => ref.invalidate(_activityDetail(id))),
         data: (a) => ListView(padding: const EdgeInsets.all(16), children: [
           Text((a['subject'] ?? '(konu yok)').toString(), style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 8),

@@ -1,5 +1,5 @@
 List<Map<String, dynamic>> unwrapList(dynamic body) {
-  final list = body is List ? body : (body is Map ? (body['items'] as List? ?? const []) : const []);
+  final list = body is List ? body : (body is Map ? ((body['items'] ?? body['data']) as List? ?? const []) : const []);
   return list.map((e) => (e as Map).cast<String, dynamic>()).toList();
 }
 
