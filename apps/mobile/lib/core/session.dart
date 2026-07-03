@@ -50,6 +50,11 @@ class AuthRepository {
   }
 
   Future<void> logout() async {
+    try {
+      final s = ref.read(sessionProvider);
+      final token = await _storage.read(key: 'dynops_push_token');
+      if (s != null && token != null) await s.api.delete('/devices/$token');
+    } catch (_) {/* best-effort */}
     await _storage.deleteAll();
     ref.read(sessionProvider.notifier).state = null;
   }

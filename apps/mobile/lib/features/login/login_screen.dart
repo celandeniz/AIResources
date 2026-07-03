@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../../core/push.dart';
 import '../../core/session.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -18,8 +19,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _login() async {
     setState(() { _busy = true; _error = null; });
     try {
-      await ref.read(authRepositoryProvider).login(_server.text.trim(), _email.text.trim());
-      if (mounted) context.go('/approvals');
+      final session = await ref.read(authRepositoryProvider).login(_server.text.trim(), _email.text.trim());
+      if (mounted) {
+        initPush(session, GoRouter.of(context));
+        context.go('/approvals');
+      }
     } catch (e) {
       setState(() => _error = 'Giriş başarısız: $e');
     } finally {

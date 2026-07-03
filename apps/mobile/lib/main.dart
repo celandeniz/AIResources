@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'core/push.dart';
 import 'core/router.dart';
 import 'core/session.dart';
 import 'core/theme.dart';
@@ -17,7 +18,10 @@ class _DynOpsAppState extends ConsumerState<DynOpsApp> {
   @override
   void initState() {
     super.initState();
-    ref.read(authRepositoryProvider).restore().then((_) => router.refresh());
+    ref.read(authRepositoryProvider).restore().then((session) {
+      router.refresh();
+      if (session != null) initPush(session, router);
+    });
   }
 
   @override
