@@ -42,6 +42,7 @@ class _ApprovalsScreenState extends ConsumerState<ApprovalsScreen> {
 
   Future<void> _bulk(String action) async {
     await ref.read(approvalActionsProvider).bulk(selected.toList(), action);
+    if (!mounted) return;
     setState(() => selected.clear());
     ref.invalidate(approvalsListProvider);
   }
