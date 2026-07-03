@@ -37,13 +37,18 @@ export class PushDispatcherService implements OnModuleInit, OnModuleDestroy {
       orderBy: { created_at: 'asc' },
       take: 50,
     });
-    if (approvals.length) this.approvalsSince = approvals[approvals.length - 1].created_at;
     for (const a of approvals) {
-      await this.pushToWorkspace(
-        a.workspace_id,
-        { title: `Yeni onay: ${a.action}`, body: (a.activity?.subject ?? a.reason ?? '').slice(0, 160) },
-        { type: 'approval', id: a.id },
-      );
+      try {
+        await this.pushToWorkspace(
+          a.workspace_id,
+          { title: `Yeni onay: ${a.action}`, body: (a.activity?.subject ?? a.reason ?? '').slice(0, 160) },
+          { type: 'approval', id: a.id },
+        );
+      } catch (e) {
+        this.logger.warn(`push failed for approval ${a.id}: ${(e as Error).message}`);
+      }
+      // Advance per-row so a mid-batch failure never silently drops the rest.
+      this.approvalsSince = a.created_at;
     }
 
     // 2. New notifications since the watermark.
@@ -52,13 +57,17 @@ export class PushDispatcherService implements OnModuleInit, OnModuleDestroy {
       orderBy: { created_at: 'asc' },
       take: 50,
     });
-    if (notifs.length) this.notificationsSince = notifs[notifs.length - 1].created_at;
     for (const n of notifs) {
-      await this.pushToWorkspace(
-        n.workspace_id,
-        { title: String(n.title).slice(0, 100), body: String(n.message).slice(0, 160) },
-        { type: 'notification', id: n.id },
-      );
+      try {
+        await this.pushToWorkspace(
+          n.workspace_id,
+          { title: String(n.title).slice(0, 100), body: String(n.message).slice(0, 160) },
+          { type: 'notification', id: n.id },
+        );
+      } catch (e) {
+        this.logger.warn(`push failed for notification ${n.id}: ${(e as Error).message}`);
+      }
+      this.notificationsSince = n.created_at;
     }
   }
 
@@ -67,9 +76,10 @@ export class PushDispatcherService implements OnModuleInit, OnModuleDestroy {
     notification: { title: string; body: string },
     data: Record<string, string>,
   ) {
-    const tokens = await (this.prisma as any).device_tokens.findMany({
-      where: wsId ? { OR: [{ workspace_id: wsId }, { workspace_id: null }] } : {},
-    });
+    // Tenant isolation: only devices registered to the event's workspace get
+    // the push. Unscoped events (no workspace) are not fanned out at all.
+    if (!wsId) return;
+    const tokens = await (this.prisma as any).device_tokens.findMany({ where: { workspace_id: wsId } });
     for (const t of tokens) {
       const result = await sendFcm(t.token, notification, data);
       if (result === 'unregistered') {
