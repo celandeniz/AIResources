@@ -30,8 +30,14 @@ class MissionsScreen extends ConsumerWidget {
       ),
     );
     if (ok != true || goalCtl.text.trim().isEmpty) return;
-    await ref.read(sessionProvider)!.api.post('/missions', body: {'goal': goalCtl.text.trim()});
-    ref.invalidate(missionsProvider);
+    try {
+      await ref.read(sessionProvider)!.api.post('/missions', body: {'goal': goalCtl.text.trim()});
+      ref.invalidate(missionsProvider);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Mission başlatılamadı: $e')));
+      }
+    }
   }
 
   @override

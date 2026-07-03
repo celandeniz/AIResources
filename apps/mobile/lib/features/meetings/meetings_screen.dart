@@ -18,8 +18,8 @@ class Meeting {
     return Meeting(
       id: j['id'] as String,
       title: (m['title'] ?? j['reason'] ?? 'Toplantı') as String?,
-      start: m['start'] != null ? DateTime.tryParse(m['start'] as String) : null,
-      end: m['end'] != null ? DateTime.tryParse(m['end'] as String) : null,
+      start: m['start'] != null ? DateTime.tryParse(m['start'] as String)?.toLocal() : null,
+      end: m['end'] != null ? DateTime.tryParse(m['end'] as String)?.toLocal() : null,
       attendees: (m['attendees'] as List? ?? const []).map((e) => e.toString()).toList(),
       location: m['location'] as String?,
     );
@@ -31,30 +31,45 @@ final meetingsProvider = FutureProvider.autoDispose<List<Meeting>>((ref) async {
   return unwrapList(await api.get('/meetings')).map(Meeting.fromJson).toList();
 });
 
-class MeetingsScreen extends ConsumerWidget {
+class MeetingsScreen extends ConsumerStatefulWidget {
   const MeetingsScreen({super.key});
+  @override
+  ConsumerState<MeetingsScreen> createState() => _MeetingsScreenState();
+}
 
-  Future<void> _act(WidgetRef ref, String id, String action, {Map<String, dynamic>? body}) async {
-    await ref.read(sessionProvider)!.api.post('/meetings/$id/$action', body: body);
-    ref.invalidate(meetingsProvider);
+class _MeetingsScreenState extends ConsumerState<MeetingsScreen> {
+  final _busyIds = <String>{};
+
+  Future<void> _act(String id, String action, {Map<String, dynamic>? body}) async {
+    setState(() => _busyIds.add(id));
+    try {
+      await ref.read(sessionProvider)!.api.post('/meetings/$id/$action', body: body);
+      ref.invalidate(meetingsProvider);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('İşlem başarısız: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _busyIds.remove(id));
+    }
   }
 
-  Future<void> _proposeTime(BuildContext context, WidgetRef ref, Meeting m) async {
+  Future<void> _proposeTime(Meeting m) async {
     final date = await showDatePicker(
       context: context,
       initialDate: m.start ?? DateTime.now(),
       firstDate: DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 90)),
     );
-    if (date == null || !context.mounted) return;
+    if (date == null || !mounted) return;
     final time = await showTimePicker(context: context, initialTime: const TimeOfDay(hour: 10, minute: 0));
-    if (time == null) return;
+    if (time == null || !mounted) return;
     final newTime = DateTime(date.year, date.month, date.day, time.hour, time.minute).toUtc().toIso8601String();
-    await _act(ref, m.id, 'propose-time', body: {'newTime': newTime});
+    await _act(m.id, 'propose-time', body: {'newTime': newTime});
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final list = ref.watch(meetingsProvider);
     final canDecide = ref.watch(sessionProvider)?.canDecide ?? false;
     final fmt = DateFormat('d MMM HH:mm');
@@ -69,6 +84,7 @@ class MeetingsScreen extends ConsumerWidget {
                 itemCount: items.length,
                 itemBuilder: (_, i) {
                   final m = items[i];
+                  final busy = _busyIds.contains(m.id);
                   return Card(
                     margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     child: Padding(
@@ -83,9 +99,9 @@ class MeetingsScreen extends ConsumerWidget {
                         ].join(' · ')),
                         if (canDecide)
                           Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                            TextButton(onPressed: () => _act(ref, m.id, 'reject', body: {'note': 'Mobilden reddedildi'}), child: const Text('Reddet')),
-                            TextButton(onPressed: () => _proposeTime(context, ref, m), child: const Text('Alternatif zaman')),
-                            FilledButton(onPressed: () => _act(ref, m.id, 'accept'), child: const Text('Kabul')),
+                            TextButton(onPressed: busy ? null : () => _act(m.id, 'reject', body: {'note': 'Mobilden reddedildi'}), child: const Text('Reddet')),
+                            TextButton(onPressed: busy ? null : () => _proposeTime(m), child: const Text('Alternatif zaman')),
+                            FilledButton(onPressed: busy ? null : () => _act(m.id, 'accept'), child: const Text('Kabul')),
                           ]),
                       ]),
                     ),
