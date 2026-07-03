@@ -25,11 +25,14 @@ Future<void> initPush(Session session, GoRouter router) async {
       });
       await const FlutterSecureStorage().write(key: 'dynops_push_token', value: token);
     }
-    messaging.onTokenRefresh.listen((t) {
-      session.api.post('/devices/register', body: {
-        'platform': Platform.isIOS ? 'ios' : 'android',
-        'token': t,
-      });
+    messaging.onTokenRefresh.listen((t) async {
+      try {
+        await const FlutterSecureStorage().write(key: 'dynops_push_token', value: t);
+        await session.api.post('/devices/register', body: {
+          'platform': Platform.isIOS ? 'ios' : 'android',
+          'token': t,
+        });
+      } catch (_) {/* best-effort */}
     });
 
     void route(RemoteMessage m) {
