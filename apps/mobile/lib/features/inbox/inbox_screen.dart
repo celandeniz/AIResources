@@ -52,10 +52,11 @@ class InboxScreen extends ConsumerWidget {
                 itemCount: items.length,
                 itemBuilder: (_, i) {
                   final a = items[i];
+                  final channel = (a['channel'] ?? '').toString();
                   return ListTile(
-                    leading: CircleAvatar(child: Text((a['channel'] ?? '?').toString().substring(0, 1).toUpperCase())),
+                    leading: CircleAvatar(child: Text(channel.isEmpty ? '?' : channel[0].toUpperCase())),
                     title: Text((a['subject'] ?? '(konu yok)').toString(), maxLines: 1, overflow: TextOverflow.ellipsis),
-                    subtitle: Text('${a['channel']} · ${a['status']}'),
+                    subtitle: Text('${channel.isEmpty ? '?' : channel} · ${a['status']}'),
                     onTap: () => context.push('/inbox/${a['id']}'),
                   );
                 },
