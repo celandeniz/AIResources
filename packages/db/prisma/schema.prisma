@@ -835,6 +835,23 @@ model notifications {
   @@map("notifications")
 }
 
+// Mobile push — one row per registered device token (FCM). No FK relations by
+// design (same as notifications): tokens outlive membership changes and are
+// pruned by the dispatcher on FCM "unregistered" responses.
+model device_tokens {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspace_id String?  @db.Uuid
+  user_id      String   @db.Uuid
+  platform     String   @db.VarChar(10)
+  token        String   @unique @db.VarChar(512)
+  last_seen_at DateTime @default(now()) @db.Timestamptz(6)
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([user_id])
+  @@map("device_tokens")
+}
+
 model templates {
   id           String   @id @default(uuid()) @db.Uuid
   workspace_id String?  @db.Uuid

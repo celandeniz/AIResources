@@ -37,6 +37,7 @@ import { StyleModule } from './modules/style/style.controller';
 import { CodeTasksModule } from './modules/code-tasks/code-tasks.controller';
 import { ReplySettingsModule } from './modules/reply-settings/reply-settings.controller';
 import { MeetingsModule } from './modules/meetings/meetings.controller';
+import { DevicesModule } from './modules/devices/devices.controller';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -76,6 +77,7 @@ import { HealthController } from './health.controller';
     CodeTasksModule,
     ReplySettingsModule,
     MeetingsModule,
+    DevicesModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],
