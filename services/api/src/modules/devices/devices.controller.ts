@@ -25,8 +25,9 @@ class DevicesController {
   }
 
   @Delete(':token')
-  async unregister(@Param('token') token: string) {
-    await (this.prisma as any).device_tokens.deleteMany({ where: { token } });
+  async unregister(@Param('token') token: string, @CurrentUser() user: AuthUser) {
+    // Scoped to the caller — a user may only unregister their own device.
+    await (this.prisma as any).device_tokens.deleteMany({ where: { token, user_id: user.id } });
     return { ok: true };
   }
 }
