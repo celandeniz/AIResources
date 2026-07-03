@@ -7,6 +7,9 @@ import '../features/inbox/inbox_screen.dart';
 import '../features/inbox/activity_detail_screen.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
+import '../features/missions/missions_screen.dart';
+import '../features/missions/mission_detail_screen.dart';
+import '../features/meetings/meetings_screen.dart';
 import '../shell.dart';
 import 'session.dart';
 
@@ -33,7 +36,9 @@ GoRouter buildRouter(WidgetRef ref) => GoRouter(
             GoRoute(path: '/inbox', builder: (_, __) => const InboxScreen()),
             GoRoute(path: '/inbox/:id', builder: (_, s) => ActivityDetailScreen(id: s.pathParameters['id']!)),
             GoRoute(path: '/chat', builder: (_, __) => const Scaffold(body: Center(child: Text('Sohbet — M2\'de geliyor')))),
-            GoRoute(path: '/missions', builder: (_, __) => const Scaffold(body: Center(child: Text('Missionlar — Task 6')))),
+            GoRoute(path: '/missions', builder: (_, __) => const MissionsScreen()),
+            GoRoute(path: '/missions/:id', builder: (_, s) => MissionDetailScreen(id: s.pathParameters['id']!)),
+            GoRoute(path: '/meetings', builder: (_, __) => const MeetingsScreen()),
             GoRoute(path: '/more', builder: (_, __) => const DashboardScreen()),
           ],
         ),

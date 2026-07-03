@@ -35,6 +35,7 @@ class DashboardScreen extends ConsumerWidget {
           crossAxisSpacing: 12,
           childAspectRatio: 1.4,
           children: [
+            GestureDetector(onTap: () => context.push('/meetings'), child: _kpi('Toplantılar', '→')),
             _kpi('İşlenen Aktivite', '${s['activitiesHandled'] ?? '—'}'),
             _kpi('Bekleyen Onay', '${s['pendingApprovals'] ?? '—'}'),
             _kpi('Eskalasyon', '${s['escalations'] ?? '—'}'),
