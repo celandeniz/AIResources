@@ -37,7 +37,7 @@ import { StyleModule } from './modules/style/style.controller';
 import { CodeTasksModule } from './modules/code-tasks/code-tasks.controller';
 import { ReplySettingsModule } from './modules/reply-settings/reply-settings.controller';
 import { MeetingsModule } from './modules/meetings/meetings.controller';
-import { DevicesModule } from './modules/devices/devices.controller';
+import { DevicesModule } from './modules/devices/devices.module';
 import { ChatModule } from './modules/chat/chat.controller';
 import { PushDispatcherModule } from './integrations/push/push-dispatcher.service';
 import { HealthController } from './health.controller';

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Module, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Param, Post } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CurrentUser, AuthUser } from '../../auth/decorators';
 import { tenantStore } from '../../common/tenant';
@@ -6,7 +6,7 @@ import { tenantStore } from '../../common/tenant';
 // Mobile device registry for FCM push. Any authenticated user may register
 // their own device; unregister is by exact token (called on logout).
 @Controller('devices')
-class DevicesController {
+export class DevicesController {
   constructor(private readonly prisma: PrismaService) {}
 
   @Post('register')
@@ -33,6 +33,3 @@ class DevicesController {
     return { ok: true };
   }
 }
-
-@Module({ controllers: [DevicesController] })
-export class DevicesModule {}
