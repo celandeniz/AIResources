@@ -52,7 +52,8 @@ export type ToolName =
   | 'make_chart'
   | 'send_whatsapp_message'
   | 'bc_create_sales_order'
-  | 'code_task';
+  | 'code_task'
+  | 'phone_task';
 
 export type IntegrationKind =
   | 'email'
@@ -117,6 +118,14 @@ export const TOOL_REGISTRY: Record<ToolName, ToolDef> = {
   send_whatsapp_message: { name: 'send_whatsapp_message', sensitive: true, risk: 'high', targets: 'whatsapp', description: 'Send a WhatsApp message to a customer (always approval).' },
   bc_create_sales_order: { name: 'bc_create_sales_order', sensitive: true, risk: 'high', targets: 'business_central', monetary: true, description: 'Create a Business Central sales order (always approval).' },
   code_task: { name: 'code_task', sensitive: true, risk: 'high', targets: 'internal', description: 'Run an AI coding task via OpenCode (always approval; returns a diff for review).' },
+  phone_task: {
+    name: 'phone_task',
+    sensitive: true,
+    risk: 'high',
+    targets: 'internal',
+    description:
+      "Execute a step-script on the user's Android device via the AccessibilityService operator (open_app/tap/type/wait/assert). Always approval; the phone never plans, only executes an already-approved script.",
+  },
 };
 
 // Tools that ALWAYS require human approval regardless of confidence/limit.
