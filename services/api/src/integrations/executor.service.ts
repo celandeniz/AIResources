@@ -281,6 +281,16 @@ export class ExecutorService {
       });
       return { ok: r.ok, detail: r.detail ?? r.summary?.slice(0, 200), result: r };
     }
+    if (tool === 'phone_task') {
+      const commandId = args.device_command_id as string | undefined;
+      if (!commandId) return { ok: false, detail: 'phone_task missing device_command_id' };
+      const cmd = await (this.prisma as any).device_commands.findUnique({ where: { id: commandId } });
+      return {
+        ok: true,
+        detail: `Phone task queued for device execution (status: ${cmd?.status ?? 'unknown'})`,
+        result: { device_command_id: commandId, status: cmd?.status ?? 'unknown' },
+      };
+    }
     if (tool === 'make_chart') {
       const type = args.type && ['bar', 'donut', 'line'].includes(String(args.type)) ? String(args.type) : 'bar';
       return { ok: true, chart: { type, title: args.title ?? 'Chart', ...args } };
