@@ -5,6 +5,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
 import 'session.dart';
 
+void Function(String? id)? onCommandPush;
+
 /// Registers this device for FCM push and wires notification-tap deep links.
 /// Safe no-op when Firebase isn't configured for the build (no
 /// google-services.json / GoogleService-Info.plist) — dev builds keep working.
@@ -41,8 +43,14 @@ Future<void> initPush(Session session, GoRouter router) async {
       if (id == null) return;
       if (type == 'approval') router.push('/approvals/$id');
       if (type == 'notification') router.go('/inbox');
+      if (type == 'command') router.push('/operator/commands/$id');
     }
 
+    FirebaseMessaging.onMessage.listen((m) {
+      if (m.data['type'] == 'command') {
+        onCommandPush?.call(m.data['id']);
+      }
+    });
     FirebaseMessaging.onMessageOpenedApp.listen(route);
     final initial = await messaging.getInitialMessage();
     if (initial != null) route(initial);

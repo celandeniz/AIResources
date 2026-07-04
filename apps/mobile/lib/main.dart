@@ -5,6 +5,7 @@ import 'core/router.dart';
 import 'core/session.dart';
 import 'core/theme.dart';
 import 'core/branding.dart';
+import 'features/operator/operator_repository.dart';
 
 void main() => runApp(const ProviderScope(child: DynOpsApp()));
 
@@ -19,6 +20,7 @@ class _DynOpsAppState extends ConsumerState<DynOpsApp> {
   @override
   void initState() {
     super.initState();
+    onCommandPush = (_) => ref.invalidate(operatorCommandsProvider);
     ref.read(authRepositoryProvider).restore().then((session) {
       router.refresh();
       if (session != null) initPush(session, router);
