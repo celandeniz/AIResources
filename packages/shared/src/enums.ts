@@ -15,7 +15,9 @@ export const ACTIVITY_CHANNELS = [
   'ticket',
   'document',
   'manual',
+  'mission',
   'whatsapp',
+  'chat',
 ] as const;
 export type ActivityChannel = (typeof ACTIVITY_CHANNELS)[number];
 

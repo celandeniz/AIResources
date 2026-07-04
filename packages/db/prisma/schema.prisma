@@ -55,6 +55,7 @@ enum activity_channel {
   proactive
   mission
   whatsapp
+  chat
 }
 
 enum approval_status {
