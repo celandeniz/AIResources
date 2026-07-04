@@ -76,3 +76,37 @@ export async function sendFcm(
     return 'error';
   }
 }
+
+// Data-only push: no visible OS notification. Used to wake the mobile app so it
+// can fetch a newly approved phone command; failure is always best-effort.
+export async function sendFcmSilent(
+  deviceToken: string,
+  data: Record<string, string>,
+): Promise<'ok' | 'unregistered' | 'error'> {
+  if (!fcmConfigured()) {
+    logger.log(`(mock) silent push -> [${data.type ?? '?'}:${data.id ?? '?'}]`);
+    return 'ok';
+  }
+  try {
+    const token = await accessToken();
+    const res = await fetch(`https://fcm.googleapis.com/v1/projects/${sa!.project_id}/messages:send`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        message: { token: deviceToken, data, android: { priority: 'high' } },
+      }),
+    });
+    if (res.status === 404 || res.status === 410 || res.status === 400) {
+      const text = await res.text().catch(() => '');
+      return text.includes('UNREGISTERED') || text.includes('registration-token-not-registered') ? 'unregistered' : 'error';
+    }
+    if (!res.ok) {
+      logger.warn(`FCM silent ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      return 'error';
+    }
+    return 'ok';
+  } catch (e) {
+    logger.warn(`FCM silent send failed: ${(e as Error).message}`);
+    return 'error';
+  }
+}

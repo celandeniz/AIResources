@@ -5,6 +5,8 @@ import { ExecutorService } from '../../integrations/executor.service';
 import { QueueService } from '../../queue/queue.service';
 import { emitStreamEvent } from '../../common/events';
 import type { AuthUser } from '../../auth/decorators';
+import { PHONE_COMMAND_TTL_MS } from '../devices/phone-task.service';
+import { pushCommandReady } from '../devices/push-command-ready';
 
 const AGENT_URL = process.env.AGENT_URL ?? 'http://localhost:8000';
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN ?? 'dev-internal-token';
@@ -404,6 +406,21 @@ export class ApprovalsService {
     let executed: any = null;
     if (approval.tool_call_id) {
       await this.prisma.tool_calls.update({ where: { id: approval.tool_call_id }, data: { status: 'approved' } });
+      if (approval.action === 'phone_task' && approval.tool_call) {
+        const args = (approval.tool_call.args as any) ?? {};
+        const commandId = args.device_command_id as string | undefined;
+        if (commandId) {
+          try {
+            const cmd = await (this.prisma as any).device_commands.update({
+              where: { id: commandId },
+              data: { status: 'approved', expires_at: new Date(Date.now() + PHONE_COMMAND_TTL_MS) },
+            });
+            await pushCommandReady(this.prisma, cmd.user_id, commandId, cmd.workspace_id);
+          } catch (e) {
+            console.warn(`[approvals] phone_task push failed for ${commandId}:`, (e as Error).message);
+          }
+        }
+      }
       executed = await this.executor.executeToolCall(approval.tool_call_id, user.id);
     }
 
@@ -418,6 +435,14 @@ export class ApprovalsService {
     emitStreamEvent({ type: 'approval', workspaceId: approval.workspace_id, payload: { id, status: 'rejected' } });
     if (approval.tool_call_id) {
       await this.prisma.tool_calls.update({ where: { id: approval.tool_call_id }, data: { status: 'rejected' } });
+      const toolCall = await this.prisma.tool_calls.findUnique({ where: { id: approval.tool_call_id } });
+      const commandId = (toolCall?.args as any)?.device_command_id as string | undefined;
+      if (approval.action === 'phone_task' && commandId) {
+        await (this.prisma as any).device_commands.updateMany({
+          where: { id: commandId },
+          data: { status: 'rejected' },
+        });
+      }
     }
     await this.prisma.activities.update({ where: { id: approval.activity_id }, data: { status: 'escalated' } });
     await this.audit.log({ actorType: 'user', actorUserId: user.id, action: 'reject', entityType: 'approvals', entityId: id, activityId: approval.activity_id, summary: `Rejected ${approval.action}` });
