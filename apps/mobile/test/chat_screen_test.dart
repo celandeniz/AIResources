@@ -22,4 +22,20 @@ void main() {
     expect(find.byType(TextField), findsOneWidget);
     expect(find.byIcon(Icons.send), findsOneWidget);
   });
+
+  testWidgets('conversation screen renders a TTS toggle', (tester) async {
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: ChatConversationScreen(
+            threadId: null,
+            resourceKey: 'ai_executive_assistant',
+            resourceName: 'Executive Assistant',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byIcon(Icons.volume_off), findsOneWidget);
+  });
 }

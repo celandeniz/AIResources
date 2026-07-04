@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../ui/components/components.dart';
 import '../../ui/components/theme_tokens.dart';
@@ -27,22 +29,87 @@ class ChatConversationScreen extends ConsumerStatefulWidget {
 class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen> {
   final _composeController = TextEditingController();
   final _scrollController = ScrollController();
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  final FlutterTts _tts = FlutterTts();
   final List<ChatMessage> _optimistic = [];
   String? _threadId;
   bool _sending = false;
+  bool _speechAvailable = false;
+  bool _listening = false;
+  bool _ttsEnabled = false;
   String? _error;
 
   @override
   void initState() {
     super.initState();
     _threadId = widget.threadId;
+    _initSpeech();
   }
 
   @override
   void dispose() {
+    _speech.stop();
+    _tts.stop();
     _composeController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _initSpeech() async {
+    try {
+      _speechAvailable = await _speech.initialize(
+        onStatus: (status) {
+          if (!mounted) return;
+          if (status == 'done' || status == 'notListening') {
+            setState(() => _listening = false);
+          }
+        },
+      );
+    } catch (_) {
+      _speechAvailable = false;
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _toggleListening() async {
+    if (!_speechAvailable) return;
+    if (_listening) {
+      await _speech.stop();
+      if (mounted) setState(() => _listening = false);
+      return;
+    }
+
+    setState(() => _listening = true);
+    final localeId =
+        Localizations.localeOf(context).languageCode == 'tr' ? 'tr_TR' : 'en_US';
+    await _speech.listen(
+      listenOptions: stt.SpeechListenOptions(
+        localeId: localeId,
+        listenMode: stt.ListenMode.dictation,
+        partialResults: true,
+      ),
+      onResult: (result) {
+        if (!mounted) return;
+        setState(() {
+          _composeController.text = result.recognizedWords;
+          _composeController.selection = TextSelection.collapsed(
+            offset: _composeController.text.length,
+          );
+        });
+      },
+    );
+  }
+
+  Future<void> _maybeSpeak(String text) async {
+    if (!_ttsEnabled || text.isEmpty) return;
+    try {
+      final locale =
+          Localizations.localeOf(context).languageCode == 'tr' ? 'tr-TR' : 'en-US';
+      await _tts.setLanguage(locale);
+      await _tts.speak(text);
+    } catch (_) {
+      // Voice output is best-effort and must never block chat.
+    }
   }
 
   Future<void> _send() async {
@@ -70,6 +137,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       setState(() => _threadId = result.threadId);
       ref.invalidate(chatMessagesProvider(result.threadId));
       ref.invalidate(chatThreadsProvider);
+      await _maybeSpeak(result.reply);
       if (result.toolIntentsPending && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -98,6 +166,14 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
             child: PageHeader(
               title: widget.resourceName,
               subtitle: _threadId == null ? 'Yeni sohbet' : 'Devam eden sohbet',
+              actions: [
+                DynButton(
+                  variant: DynButtonVariant.ghost,
+                  size: DynButtonSize.icon,
+                  onPressed: () => setState(() => _ttsEnabled = !_ttsEnabled),
+                  child: Icon(_ttsEnabled ? Icons.volume_up : Icons.volume_off),
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -127,6 +203,9 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
           SafeArea(top: false, child: _ComposeBar(
             controller: _composeController,
             sending: _sending,
+            speechAvailable: _speechAvailable,
+            listening: _listening,
+            onMic: _toggleListening,
             onSend: _send,
           )),
         ]),
@@ -208,11 +287,17 @@ class _ComposeBar extends StatelessWidget {
   const _ComposeBar({
     required this.controller,
     required this.sending,
+    required this.speechAvailable,
+    required this.listening,
+    required this.onMic,
     required this.onSend,
   });
 
   final TextEditingController controller;
   final bool sending;
+  final bool speechAvailable;
+  final bool listening;
+  final VoidCallback onMic;
   final VoidCallback onSend;
 
   @override
@@ -252,6 +337,15 @@ class _ComposeBar extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
+        if (speechAvailable) ...[
+          DynButton(
+            variant: listening ? DynButtonVariant.danger : DynButtonVariant.outline,
+            size: DynButtonSize.icon,
+            onPressed: onMic,
+            child: Icon(listening ? Icons.mic : Icons.mic_none),
+          ),
+          const SizedBox(width: 10),
+        ],
         sending
             ? const SizedBox(
                 height: 40,
