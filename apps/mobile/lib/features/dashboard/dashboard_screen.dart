@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -182,6 +184,25 @@ class DashboardScreen extends ConsumerWidget {
                   child: DonutChart(
                     data: _donutData(context, s),
                     centerLabel: '${_donutTotal(s)}',
+                  ),
+                ),
+              ],
+              if (Platform.isAndroid) ...[
+                const SizedBox(height: 20),
+                const SectionTitle('Araçlar'),
+                const SizedBox(height: 10),
+                DynCard(
+                  padding: 16,
+                  onTap: () => context.push('/operator'),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.smart_toy_outlined),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text('Telefon Operatörü'),
+                      ),
+                      Icon(Icons.chevron_right),
+                    ],
                   ),
                 ),
               ],

@@ -12,6 +12,8 @@ import '../features/missions/mission_detail_screen.dart';
 import '../features/meetings/meetings_screen.dart';
 import '../features/chat/chat_conversation_screen.dart';
 import '../features/chat/chat_threads_screen.dart';
+import '../features/operator/operator_detail_screen.dart';
+import '../features/operator/operator_screen.dart';
 import '../shell.dart';
 import 'session.dart';
 import '../ui/tokens/tokens.dart';
@@ -94,6 +96,17 @@ GoRouter buildRouter(WidgetRef ref) => GoRouter(
         GoRoute(
           path: '/more',
           pageBuilder: (_, state) => _page(state, const DashboardScreen()),
+        ),
+        GoRoute(
+          path: '/operator',
+          pageBuilder: (_, state) => _page(state, const OperatorScreen()),
+        ),
+        GoRoute(
+          path: '/operator/commands/:id',
+          pageBuilder: (_, state) => _page(
+            state,
+            OperatorDetailScreen(commandId: state.pathParameters['id']!),
+          ),
         ),
       ],
     ),
