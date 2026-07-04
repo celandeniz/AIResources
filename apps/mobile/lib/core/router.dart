@@ -10,6 +10,8 @@ import '../features/login/login_screen.dart';
 import '../features/missions/missions_screen.dart';
 import '../features/missions/mission_detail_screen.dart';
 import '../features/meetings/meetings_screen.dart';
+import '../features/chat/chat_conversation_screen.dart';
+import '../features/chat/chat_threads_screen.dart';
 import '../shell.dart';
 import 'session.dart';
 import '../ui/tokens/tokens.dart';
@@ -59,10 +61,18 @@ GoRouter buildRouter(WidgetRef ref) => GoRouter(
         ),
         GoRoute(
           path: '/chat',
+          pageBuilder: (_, state) => _page(state, const ChatThreadsScreen()),
+        ),
+        GoRoute(
+          path: '/chat/:id',
           pageBuilder: (_, state) => _page(
             state,
-            const Scaffold(
-              body: Center(child: Text('Sohbet — M2\'de geliyor')),
+            ChatConversationScreen(
+              threadId: state.pathParameters['id'] == 'new'
+                  ? null
+                  : state.pathParameters['id'],
+              resourceKey: state.uri.queryParameters['resourceKey'] ?? '',
+              resourceName: state.uri.queryParameters['resourceName'] ?? 'Sohbet',
             ),
           ),
         ),
