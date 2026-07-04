@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/api_error_view.dart';
+import '../../core/branding.dart';
 import '../../core/session.dart';
 import '../../ui/charts/charts.dart';
 import '../../ui/components/components.dart';
@@ -12,6 +13,23 @@ final _summary = FutureProvider.autoDispose<Map<String, dynamic>>((ref) async {
   return ((await api.get('/dashboard/summary')) as Map).cast<String, dynamic>();
 });
 
+final _unreadNotifications = FutureProvider.autoDispose<int>((ref) async {
+  final api = ref.watch(sessionProvider)!.api;
+  try {
+    final body = await api.get('/notifications', query: {'unread': 'true'});
+    if (body is List) return body.length;
+    if (body is Map) {
+      final count = body['count'] ?? body['unread'] ?? body['total'];
+      if (count is num) return count.toInt();
+      final items = body['items'] ?? body['data'];
+      if (items is List) return items.length;
+    }
+  } catch (_) {
+    return 0;
+  }
+  return 0;
+});
+
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
 
@@ -19,6 +37,8 @@ class DashboardScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final summary = ref.watch(_summary);
     final session = ref.watch(sessionProvider);
+    final themeMode = ref.watch(themeModeProvider);
+    final unread = ref.watch(_unreadNotifications).valueOrNull ?? 0;
     return Scaffold(
       body: summary.when(
         loading: () => SafeArea(
@@ -45,6 +65,23 @@ class DashboardScreen extends ConsumerWidget {
                     session?.user['displayName']?.toString() ??
                     'Operasyon sağlığı ve karar temposu',
                 actions: [
+                  DynButton(
+                    size: DynButtonSize.icon,
+                    variant: DynButtonVariant.ghost,
+                    onPressed: () {
+                      ref
+                          .read(themeModeProvider.notifier)
+                          .state = themeMode == ThemeMode.dark
+                          ? ThemeMode.light
+                          : ThemeMode.dark;
+                    },
+                    child: Icon(
+                      themeMode == ThemeMode.dark
+                          ? Icons.light_mode_outlined
+                          : Icons.dark_mode_outlined,
+                    ),
+                  ),
+                  _NotificationButton(unread: unread),
                   DynButton(
                     size: DynButtonSize.icon,
                     variant: DynButtonVariant.ghost,
@@ -191,6 +228,36 @@ class DashboardScreen extends ConsumerWidget {
     if (value is num) return value.toDouble();
     if (value is String) return double.tryParse(value);
     return null;
+  }
+}
+
+class _NotificationButton extends StatelessWidget {
+  const _NotificationButton({required this.unread});
+
+  final int unread;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        DynButton(
+          size: DynButtonSize.icon,
+          variant: DynButtonVariant.ghost,
+          onPressed: () {},
+          child: const Icon(Icons.notifications_outlined),
+        ),
+        if (unread > 0)
+          Positioned(
+            right: -2,
+            top: -2,
+            child: DynBadge(
+              variant: DynBadgeVariant.danger,
+              child: Text(unread > 99 ? '99+' : '$unread'),
+            ),
+          ),
+      ],
+    );
   }
 }
 

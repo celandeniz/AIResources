@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'ui/components/theme_tokens.dart';
 
 const _tabs = [
   (path: '/approvals', icon: Icons.fact_check_outlined, label: 'Onaylar'),
@@ -9,20 +10,40 @@ const _tabs = [
 ];
 
 class AppShell extends StatelessWidget {
-  const AppShell({super.key, required this.child, required this.currentPath, required this.onTab});
+  const AppShell({
+    super.key,
+    required this.child,
+    required this.currentPath,
+    required this.onTab,
+  });
   final Widget child;
   final String currentPath;
   final void Function(String path) onTab;
 
   @override
   Widget build(BuildContext context) {
-    final index = _tabs.indexWhere((t) => currentPath.startsWith(t.path)).clamp(0, _tabs.length - 1);
+    final c = dynColorsFor(context);
+    final index = _tabs
+        .indexWhere((t) => currentPath.startsWith(t.path))
+        .clamp(0, _tabs.length - 1);
     return Scaffold(
       body: child,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (i) => onTab(_tabs[i].path),
-        destinations: [for (final t in _tabs) NavigationDestination(icon: Icon(t.icon), label: t.label)],
+      bottomNavigationBar: DecoratedBox(
+        decoration: BoxDecoration(
+          color: c.card,
+          border: Border(top: BorderSide(color: c.border)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: NavigationBar(
+            selectedIndex: index,
+            onDestinationSelected: (i) => onTab(_tabs[i].path),
+            destinations: [
+              for (final t in _tabs)
+                NavigationDestination(icon: Icon(t.icon), label: t.label),
+            ],
+          ),
+        ),
       ),
     );
   }
