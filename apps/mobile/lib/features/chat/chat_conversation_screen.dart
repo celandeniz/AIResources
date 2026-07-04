@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:go_router/go_router.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../../ui/components/components.dart';
@@ -37,6 +38,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
   bool _speechAvailable = false;
   bool _listening = false;
   bool _ttsEnabled = false;
+  bool _lastTurnHasPendingApproval = false;
   String? _error;
 
   @override
@@ -118,6 +120,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
     setState(() {
       _sending = true;
       _error = null;
+      _lastTurnHasPendingApproval = false;
       _optimistic.add(ChatMessage(
         id: 'local-${DateTime.now().microsecondsSinceEpoch}',
         direction: 'inbound',
@@ -138,12 +141,8 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       ref.invalidate(chatMessagesProvider(result.threadId));
       ref.invalidate(chatThreadsProvider);
       await _maybeSpeak(result.reply);
-      if (result.toolIntentsPending && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Bu istek Onaylar sekmesinde bekliyor.'),
-          ),
-        );
+      if (mounted) {
+        setState(() => _lastTurnHasPendingApproval = result.toolIntentsPending);
       }
     } catch (error) {
       setState(() => _error = 'Gonderilemedi: $error');
@@ -176,6 +175,7 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
               ],
             ),
           ),
+          if (_lastTurnHasPendingApproval) _ApprovalBanner(colors: c),
           Expanded(
             child: messagesAsync == null
                 ? _bubbleList(_optimistic)
@@ -237,6 +237,36 @@ class _ChatConversationScreenState extends ConsumerState<ChatConversationScreen>
       itemCount: items.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (_, index) => _ChatBubble(message: items[index]),
+    );
+  }
+}
+
+class _ApprovalBanner extends StatelessWidget {
+  const _ApprovalBanner({required this.colors});
+
+  final DynColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: colors.warning.withValues(alpha: 0.14),
+      child: InkWell(
+        onTap: () => context.push('/approvals'),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Row(children: [
+            Icon(Icons.fact_check_outlined, color: colors.warning, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Bu istek bir onay gerektiriyor. Onaylar sekmesinde incele.',
+                style: DynType.body(colors).copyWith(color: colors.fg),
+              ),
+            ),
+            Icon(Icons.chevron_right, color: colors.warning, size: 20),
+          ]),
+        ),
+      ),
     );
   }
 }

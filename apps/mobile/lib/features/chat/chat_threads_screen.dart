@@ -134,12 +134,24 @@ class ChatThreadsScreen extends ConsumerWidget {
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
-                                    if (thread.lastMessageAt != null) ...[
+                                    if (thread.lastMessageAt != null ||
+                                        thread.status == 'awaiting_approval') ...[
                                       const SizedBox(height: 10),
-                                      Text(
-                                        fmt.format(thread.lastMessageAt!.toLocal()),
-                                        style: DynType.mono(c).copyWith(color: c.mutedFg),
-                                      ),
+                                      Row(children: [
+                                        if (thread.lastMessageAt != null)
+                                          Text(
+                                            fmt.format(thread.lastMessageAt!.toLocal()),
+                                            style: DynType.mono(c).copyWith(color: c.mutedFg),
+                                          ),
+                                        if (thread.status == 'awaiting_approval') ...[
+                                          const SizedBox(width: 8),
+                                          Icon(
+                                            Icons.pending_actions,
+                                            size: 16,
+                                            color: c.warning,
+                                          ),
+                                        ],
+                                      ]),
                                     ],
                                   ],
                                 ),
