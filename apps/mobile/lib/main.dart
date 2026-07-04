@@ -4,6 +4,7 @@ import 'core/push.dart';
 import 'core/router.dart';
 import 'core/session.dart';
 import 'core/theme.dart';
+import 'core/branding.dart';
 
 void main() => runApp(const ProviderScope(child: DynOpsApp()));
 
@@ -25,6 +26,14 @@ class _DynOpsAppState extends ConsumerState<DynOpsApp> {
   }
 
   @override
-  Widget build(BuildContext context) =>
-      MaterialApp.router(title: 'DynOps', theme: dynopsTheme, routerConfig: router);
+  Widget build(BuildContext context) {
+    final branding = ref.watch(brandingProvider);
+    return MaterialApp.router(
+      title: 'DynOps',
+      theme: buildTheme(brightness: Brightness.light, brandH: branding.h, brandS: branding.s),
+      darkTheme: buildTheme(brightness: Brightness.dark, brandH: branding.h, brandS: branding.s),
+      themeMode: ref.watch(themeModeProvider),
+      routerConfig: router,
+    );
+  }
 }

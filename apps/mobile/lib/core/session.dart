@@ -2,11 +2,13 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'api.dart';
+import 'branding.dart';
 
 class Session {
-  const Session({required this.api, required this.user});
+  const Session({required this.api, required this.user, this.workspace});
   final ApiClient api;
   final Map<String, dynamic> user;
+  final Map<String, dynamic>? workspace;
   String get role => (user['role'] ?? 'viewer') as String;
   bool get canDecide => role != 'viewer';
   bool get canManage => role == 'manager' || role == 'admin';
@@ -24,13 +26,16 @@ class AuthRepository {
     final res = await api.post('/auth/dev-login', body: {'email': email});
     api.token = res['accessToken'] as String;
     final workspaces = await api.get('/workspaces') as List;
-    if (workspaces.isNotEmpty) api.workspaceId = workspaces.first['id'] as String;
+    final workspace = workspaces.isNotEmpty ? (workspaces.first as Map).cast<String, dynamic>() : null;
+    if (workspace != null) api.workspaceId = workspace['id'] as String;
     final user = (res['user'] as Map).cast<String, dynamic>();
     await _storage.write(key: 'dynops_server', value: serverUrl);
     await _storage.write(key: 'dynops_token', value: api.token);
     await _storage.write(key: 'dynops_workspace', value: api.workspaceId);
+    await _storage.write(key: 'dynops_workspace_payload', value: jsonEncode(workspace ?? {}));
     await _storage.write(key: 'dynops_user', value: jsonEncode(user));
-    final session = Session(api: api, user: user);
+    applyWorkspaceBranding(ref, workspace);
+    final session = Session(api: api, user: user, workspace: workspace);
     ref.read(sessionProvider.notifier).state = session;
     return session;
   }
@@ -44,7 +49,10 @@ class AuthRepository {
       ..workspaceId = await _storage.read(key: 'dynops_workspace');
     final userRaw = await _storage.read(key: 'dynops_user');
     final user = userRaw != null ? (jsonDecode(userRaw) as Map).cast<String, dynamic>() : <String, dynamic>{};
-    final session = Session(api: api, user: user);
+    final workspaceRaw = await _storage.read(key: 'dynops_workspace_payload');
+    final workspace = workspaceRaw != null ? (jsonDecode(workspaceRaw) as Map).cast<String, dynamic>() : <String, dynamic>{};
+    applyWorkspaceBranding(ref, workspace);
+    final session = Session(api: api, user: user, workspace: workspace);
     ref.read(sessionProvider.notifier).state = session;
     return session;
   }
