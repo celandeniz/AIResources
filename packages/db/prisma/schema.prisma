@@ -853,6 +853,41 @@ model device_tokens {
   @@map("device_tokens")
 }
 
+// Phone-operator command channel (M3). One row per approved-or-proposed phone
+// task. The server agent proposes the step-script (payload); the phone only
+// ever executes a command that has reached status 'approved' via the normal
+// Approval Center flow (see tool_calls/approvals - phone_task tool). Status is
+// a bare String (not a Prisma enum) - same convention as code_tasks.status -
+// since this is an internal-only, still-evolving lifecycle list.
+model device_commands {
+  id           String    @id @default(uuid()) @db.Uuid
+  workspace_id String?   @db.Uuid
+  user_id      String    @db.Uuid
+  agent_run_id String?   @db.Uuid
+  // proposed -> awaiting_approval -> approved -> sent -> executing ->
+  // succeeded | failed | rejected | expired
+  status       String    @default("proposed") @db.VarChar(20)
+  kind         String    @db.VarChar(80)
+  // Array of {op:'open_app'|'tap'|'type'|'wait'|'assert', ...args}. Adapted
+  // from OpenOmniBot's action vocabulary; server-authored, phone-executed only.
+  payload      Json      @default("[]")
+  // Per-step logs + final outcome, written back by the device after execution.
+  // Null until the device POSTs a result. A partial script is never reported
+  // as succeeded here - see devices.controller Task 4.
+  result       Json?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @updatedAt @db.Timestamptz(6)
+  // TTL guardrail: default now()+15min, set when status becomes 'approved'.
+  // Checked lazily (no cron in M3) on every read/write path.
+  expires_at   DateTime? @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([user_id])
+  @@index([status])
+  @@index([agent_run_id])
+  @@map("device_commands")
+}
+
 model templates {
   id           String   @id @default(uuid()) @db.Uuid
   workspace_id String?  @db.Uuid
