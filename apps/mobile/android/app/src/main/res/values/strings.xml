@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="operator_accessibility_description">DynOps Telefon Operatörü yalnızca sizin Approval Center içinde onayladığınız görev adımlarını çalıştırır. Telefonda planlama yapmaz, ekran görüntüsü almaz ve onaysız işlem başlatmaz.</string>
+</resources>
