@@ -2,11 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/api_error_view.dart';
 import '../../core/session.dart';
+import '../../ui/components/components.dart';
+import '../../ui/components/theme_tokens.dart';
+import '../../ui/tokens/tokens.dart';
 
-final _activityDetail = FutureProvider.autoDispose.family<Map<String, dynamic>, String>((ref, id) async {
-  final api = ref.watch(sessionProvider)!.api;
-  return ((await api.get('/activities/$id')) as Map).cast<String, dynamic>();
-});
+final _activityDetail = FutureProvider.autoDispose
+    .family<Map<String, dynamic>, String>((ref, id) async {
+      final api = ref.watch(sessionProvider)!.api;
+      return ((await api.get('/activities/$id')) as Map)
+          .cast<String, dynamic>();
+    });
 
 class ActivityDetailScreen extends ConsumerWidget {
   const ActivityDetailScreen({super.key, required this.id});
@@ -16,21 +21,46 @@ class ActivityDetailScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final detail = ref.watch(_activityDetail(id));
     return Scaffold(
-      appBar: AppBar(title: const Text('Aktivite')),
       body: detail.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ApiErrorView(error: e, onRetry: () => ref.invalidate(_activityDetail(id))),
-        data: (a) => ListView(padding: const EdgeInsets.all(16), children: [
-          Text((a['subject'] ?? '(konu yok)').toString(), style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          Wrap(spacing: 8, children: [
-            Chip(label: Text('${a['channel']}')),
-            Chip(label: Text('${a['status']}')),
-            if (a['priority'] != null) Chip(label: Text('${a['priority']}')),
-          ]),
-          const Divider(height: 32),
-          SelectableText((a['body'] ?? '').toString()),
-        ]),
+        error: (e, _) => ApiErrorView(
+          error: e,
+          onRetry: () => ref.invalidate(_activityDetail(id)),
+        ),
+        data: (a) {
+          final c = dynColorsFor(context);
+          return SafeArea(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
+              children: [
+                PageHeader(
+                  title: (a['subject'] ?? '(konu yok)').toString(),
+                  subtitle: 'Aktivite detayı',
+                ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ChannelChip('${a['channel'] ?? ''}'),
+                    StatusBadge('${a['status'] ?? 'new'}'),
+                    if (a['priority'] != null)
+                      DynBadge(
+                        variant: DynBadgeVariant.neutral,
+                        child: Text('${a['priority']}'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                DynCard(
+                  child: SelectableText(
+                    (a['body'] ?? '').toString(),
+                    style: DynType.body(c),
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
