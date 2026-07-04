@@ -7,7 +7,12 @@ final operatorCommandsProvider =
     FutureProvider.autoDispose<List<DeviceCommand>>((ref) async {
   final api = ref.watch(sessionProvider)!.api;
   final body = await api.get('/devices/commands', query: {'status': 'approved'});
-  return unwrapList(body).map(DeviceCommand.fromJson).toList();
+  final rows = body is Map && body['commands'] is List
+      ? (body['commands'] as List)
+          .map((item) => (item as Map).cast<String, dynamic>())
+          .toList()
+      : unwrapList(body);
+  return rows.map(DeviceCommand.fromJson).toList();
 });
 
 class OperatorActions {
