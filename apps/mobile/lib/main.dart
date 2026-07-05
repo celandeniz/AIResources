@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/push.dart';
 import 'core/router.dart';
@@ -35,6 +36,16 @@ class _DynOpsAppState extends ConsumerState<DynOpsApp> {
       theme: buildTheme(brightness: Brightness.light, brandH: branding.h, brandS: branding.s),
       darkTheme: buildTheme(brightness: Brightness.dark, brandH: branding.h, brandS: branding.s),
       themeMode: ref.watch(themeModeProvider),
+      // Turkish-first product: pin the locale so voice input (STT), TTS, and
+      // date/time formatting all resolve to Turkish regardless of the device
+      // language. speech_to_text/flutter_tts read Localizations.localeOf(context).
+      locale: const Locale('tr'),
+      supportedLocales: const [Locale('tr'), Locale('en')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       routerConfig: router,
     );
   }
