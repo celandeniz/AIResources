@@ -3,8 +3,17 @@
 // styled cover, TOC-friendly headings, tables, mermaid process diagrams,
 // screenshot placeholders. Mirrors the status-html.ts approach.
 
+// Text-node escaping. NEVER use this inside an attribute — it leaves quotes
+// intact; use attrEsc() there instead.
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Attribute-context escaping: additionally neutralises both quote styles so a
+// value can never terminate the attribute and inject a new one (e.g. onerror=).
+// Every `attr="${...}"` interpolation carrying model-generated text MUST use it.
+function attrEsc(s: string): string {
+  return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function inline(s: string): string {
@@ -78,8 +87,10 @@ export function markdownToHtml(md: string): string {
       const schemeOk = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(url) ||
         (() => { try { return new URL(url).protocol === 'https:'; } catch { return false; } })();
       if (schemeOk) {
-        const safeUrl = url.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        out.push(`<figure class="screenshot"><img src="${safeUrl}" alt="${esc(img[1])}"/></figure>`);
+        // BOTH attributes are attribute-escaped: the alt text is free-form
+        // model output and a bare `"` there would otherwise close the attribute
+        // and let an `onerror=` handler through.
+        out.push(`<figure class="screenshot"><img src="${attrEsc(url)}" alt="${attrEsc(img[1])}"/></figure>`);
       } else {
         out.push(`<div class="shot">${esc(img[1] || 'görsel')}</div>`); // reddedilen URL → yer tutucu
       }
@@ -105,13 +116,19 @@ export function renderDocHtml(opts: {
   adoRef?: string;
   markdown: string;
   generatedAt: string;
+  // Per-response CSP nonce. The page renders untrusted model output, so the
+  // caller serves it with a nonce-based script-src (no 'unsafe-inline') and
+  // every script below carries this nonce.
+  nonce: string;
 }): string {
   const body = markdownToHtml(opts.markdown);
+  const n = attrEsc(opts.nonce);
   return `<!doctype html>
 <html lang="tr"><head><meta charset="utf-8"/>
 <title>${esc(opts.title)}</title>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.4/dist/mermaid.min.js" integrity="sha384-fGOpyux4znQZ+n4tUrYReB2Ulu6K1MtBxIkbHauU09YM1hvCyA5oX9JUc1hRkDEr" crossorigin="anonymous"></script>
-<script>window.addEventListener('DOMContentLoaded',()=>{try{mermaid.initialize({startOnLoad:true,theme:'neutral'});}catch(e){}});</script>
+<script nonce="${n}" src="https://cdn.jsdelivr.net/npm/mermaid@10.9.4/dist/mermaid.min.js" integrity="sha384-fGOpyux4znQZ+n4tUrYReB2Ulu6K1MtBxIkbHauU09YM1hvCyA5oX9JUc1hRkDEr" crossorigin="anonymous"></script>
+<script nonce="${n}">window.addEventListener('DOMContentLoaded',()=>{try{mermaid.initialize({startOnLoad:true,theme:'neutral'});}catch(e){}
+var b=document.getElementById('printBtn');if(b)b.addEventListener('click',function(){window.print();});});</script>
 <style>
   :root{--ink:#16233b;--accent:#1f4e8c;--muted:#5b6b84;--line:#d8dfeb}
   *{box-sizing:border-box} body{font-family:'Segoe UI',system-ui,sans-serif;color:var(--ink);margin:0;background:#fff}
@@ -143,7 +160,7 @@ export function renderDocHtml(opts: {
   .printbar button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 16px;font-size:13px;cursor:pointer}
 </style></head>
 <body><div class="page">
-  <div class="printbar no-print"><button onclick="window.print()">🖨 Yazdır / PDF</button></div>
+  <div class="printbar no-print"><button id="printBtn" type="button">🖨 Yazdır / PDF</button></div>
   <div class="cover">
     <div class="brand">DYNAMICSOPS</div>
     <div class="doctype">${esc(opts.customer ?? '')} — Eğitim / Süreç Dokümanı</div>

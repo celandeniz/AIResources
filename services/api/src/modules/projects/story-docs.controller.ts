@@ -6,6 +6,7 @@
 // back on the ADO work item.
 
 import { Body, Controller, Get, Logger, Param, Post, Res } from '@nestjs/common';
+import { randomBytes } from 'node:crypto';
 import type { Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Roles } from '../../auth/decorators';
@@ -739,10 +740,13 @@ export class StoryDocsController {
     }
     const project = doc.project_id ? await (this.prisma as any).projects.findUnique({ where: { id: doc.project_id }, include: { customer: { select: { name: true } } } }) : null;
     res.setHeader('content-type', 'text/html; charset=utf-8');
-    // Defense-in-depth for a page rendering model-generated markdown: only the
-    // pinned mermaid CDN may run script; images limited to self/data/https.
+    // Defense-in-depth for a page rendering model-generated markdown: script
+    // runs only from the pinned mermaid CDN or with THIS response's nonce —
+    // no 'unsafe-inline', so an injected inline handler cannot execute even if
+    // escaping ever regresses. Images limited to self/data/https.
+    const nonce = randomBytes(16).toString('base64');
     res.setHeader('content-security-policy',
-      "default-src 'self'; img-src 'self' data: https:; script-src https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; frame-ancestors 'self'");
+      `default-src 'self'; img-src 'self' data: https:; script-src https://cdn.jsdelivr.net 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'none'; frame-ancestors 'self'`);
     res.send(renderDocHtml({
       title: doc.title,
       customer: project?.customer?.name ?? undefined,
@@ -750,6 +754,7 @@ export class StoryDocsController {
       adoRef: meta.ado ? `${meta.ado.org}/${meta.ado.project} #${meta.ado.id}` : undefined,
       markdown: String(meta.content),
       generatedAt: String(meta.generatedAt ?? doc.created_at.toISOString()),
+      nonce,
     }));
   }
 }
