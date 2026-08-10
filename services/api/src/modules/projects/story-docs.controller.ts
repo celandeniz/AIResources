@@ -11,9 +11,9 @@ import type { Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Roles } from '../../auth/decorators';
 import { AuditService } from '../../common/audit.service';
-import { currentWorkspaceId } from '../../common/tenant';
+import { currentWorkspaceId, tenantStore } from '../../common/tenant';
 import {
-  devOpsAdapter, devopsConfigured, fetchChildItems, fetchUserStories, fetchWorkItemComments, fetchWorkItemFull,
+  devOpsAdapter, devopsConfigured, fetchAncestors, fetchChildItems, fetchUserStories, fetchWorkItemComments, fetchWorkItemFull,
 } from '../../integrations/devops/devops.adapter';
 import { renderDocHtml } from './doc-html';
 import { PLATFORM_LABEL, buildEnvironmentContext, captureEnvironmentShots, type ShotSpec } from '../environments/environments.module';
@@ -24,6 +24,76 @@ const AGENT_URL = process.env.AGENT_URL ?? 'http://localhost:8000';
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN ?? 'dev-internal-token';
 
 const DOC_SIGNAL_RE = /(dok[uü]man|documentation|training|e[ğg]itim|kullan[ıi]m k[ıi]lavuzu|user guide|\.(pdf|docx?|pptx?)\b|sharepoint\.com)/i;
+
+// Enrichment output parser. The model writes HEADED PLAIN TEXT rather than a
+// JSON object nested inside the envelope's content string: asking for six
+// fields of nested JSON made the small models drop the closing brace often
+// enough to fail the whole call. Headings survive that class of error, and a
+// missing section just yields an empty list.
+export function parseEnrichment(raw: unknown): {
+  description: string; acceptance: string[]; business_value: string;
+  scope_out: string[]; open_questions: string[]; suggested_tasks: string[];
+} | null {
+  const clip = (v: any, n: number, len = 300) =>
+    (Array.isArray(v) ? v : []).map((x: any) => String(x).trim().slice(0, len)).filter(Boolean).slice(0, n);
+
+  // Tolerate a model that still returns the old JSON shape (object or string).
+  const asJson = (() => {
+    if (raw && typeof raw === 'object' && (raw as any).description) return raw as any;
+    const s = String(raw ?? '');
+    const start = s.indexOf('{');
+    if (start < 0 || !/"description"\s*:/.test(s)) return null;
+    for (const end of [s.lastIndexOf('}'), s.length - 1]) {
+      if (end < start) continue;
+      for (const candidate of [s.slice(start, end + 1), `${s.slice(start, end + 1)}}`]) {
+        try {
+          const p = JSON.parse(candidate);
+          if (p?.description) return p;
+        } catch { /* try next */ }
+      }
+    }
+    return null;
+  })();
+  if (asJson) {
+    return {
+      description: String(asJson.description).trim().slice(0, 4000),
+      acceptance: clip(asJson.acceptance, 8),
+      business_value: String(asJson.business_value ?? '').trim().slice(0, 600),
+      scope_out: clip(asJson.scope_out, 3),
+      open_questions: clip(asJson.open_questions, 4),
+      suggested_tasks: clip(asJson.suggested_tasks, 5, 200),
+    };
+  }
+
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  // Split on the ## headings; accept stray #/** decoration around them.
+  const sections: Record<string, string> = {};
+  let key = '';
+  for (const line of text.split('\n')) {
+    const h = line.match(/^\s*#{1,4}\s*\**\s*(ACIKLAMA|AÇIKLAMA|KABUL|DEGER|DEĞER|KAPSAM_DISI|KAPSAM DIŞI|SORULAR|GOREVLER|GÖREVLER)\b/i);
+    if (h) {
+      key = h[1].toUpperCase().replace(/[İIÇ]/g, (c) => ({ 'İ': 'I', 'I': 'I', 'Ç': 'C' } as any)[c] ?? c)
+        .replace('AÇIKLAMA', 'ACIKLAMA').replace('DEĞER', 'DEGER').replace('KAPSAM DIŞI', 'KAPSAM_DISI').replace('GÖREVLER', 'GOREVLER');
+      sections[key] = '';
+      continue;
+    }
+    if (key) sections[key] += `${line}\n`;
+  }
+  const bullets = (k: string) =>
+    (sections[k] ?? '').split('\n').map((l) => l.replace(/^\s*[-•*]\s*|^\s*\d+[.)]\s*/, '').trim()).filter(Boolean);
+
+  const description = (sections['ACIKLAMA'] ?? '').trim();
+  if (!description) return null; // heading format not honoured → caller ladders down
+  return {
+    description: description.slice(0, 4000),
+    acceptance: clip(bullets('KABUL'), 8),
+    business_value: (sections['DEGER'] ?? '').trim().slice(0, 600),
+    scope_out: clip(bullets('KAPSAM_DISI'), 3),
+    open_questions: clip(bullets('SORULAR'), 4),
+    suggested_tasks: clip(bullets('GOREVLER'), 5, 200),
+  };
+}
 
 async function runAgent(req: unknown): Promise<any | null> {
   try {
@@ -615,50 +685,75 @@ export class StoryDocsController {
     return { ok: true, docId: doc.id, title: doc.title, delivered, screenshots: shotCount, htmlPath: `/story-docs/${doc.id}/html` };
   }
 
-  // ── Story İçerik Asistanı: AI drafts description + acceptance criteria ─────
-  // Phase 1 (draft-content): NOTHING is written to ADO — the model proposes a
-  // proper Turkish description + measurable acceptance criteria from the
-  // title, existing scraps, CHILD TASKS, comments and the project's tech
-  // context (ÇÖZÜM YIĞINI). Phase 2 (apply-content): the user reviewed/edited
-  // the draft — the button click IS the human approval (same pattern as the
-  // doc-delivery comment); the write is audited and the readiness gate can be
-  // re-run immediately after.
-  @Roles('consultant')
-  @Post('projects/:id/stories/:wid/draft-content')
-  async draftContent(@Param('id') id: string, @Param('wid') wid: string) {
-    const project = await (this.prisma as any).projects.findUnique({
-      where: { id },
-      include: { customer: { select: { id: true, name: true } } },
-    });
-    if (!project?.devops_org) return { ok: false, detail: 'proje ADO eşlemesi yok' };
+  // ── Story Geliştirme Asistanı (enrichment) ─────────────────────────────────
+  // Develops a user story from its FULL context, top-down:
+  //   Epic → Feature (why the work exists)      ← fetchAncestors, the key input
+  //   + project purpose (what this engagement is for)
+  //   + product/tech stack (BC / F&SCM / web, custom apps, ISVs)
+  //   + the story's own text, child tasks and comments (implementation detail)
+  // A story's own text almost never states the business goal — its Epic/Feature
+  // does — which is why an assistant reading only the story writes generic
+  // filler. Nothing is written to ADO here; the caller reviews/edits and then
+  // apply-content performs the audited write.
+  private async enrichStory(project: any, wid: string): Promise<
+    | { ok: true; story: { id: string; title: string }; context: any; draft: any }
+    | { ok: false; detail: string }
+  > {
     const story = await fetchWorkItemFull(project.devops_org, wid);
     if (!story) return { ok: false, detail: `iş kalemi #${wid} okunamadı` };
-    const children = await fetchChildItems(project.devops_org, story).catch(() => []);
-    const comments = await fetchWorkItemComments(project.devops_org, wid, 10, { filterSelf: true }).catch(() => []);
+    const [children, comments, ancestors] = await Promise.all([
+      fetchChildItems(project.devops_org, story).catch(() => []),
+      fetchWorkItemComments(project.devops_org, wid, 10, { filterSelf: true }).catch(() => []),
+      fetchAncestors(project.devops_org, story).catch(() => []),
+    ]);
     const envContext = await buildEnvironmentContext(this.prisma, project.customer_id, project.id);
 
+    // Ancestors come back nearest-first; present them top-down (Epic → Feature)
+    // so the model reads the goal before the detail.
+    const chain = [...ancestors].reverse();
+    const ancestorBlock = chain.length
+      ? `=== ÜST BAĞLAM (Epic → Feature — işin NEDEN yapıldığı) ===\n${chain
+          .map((a) => `[${a.type}] #${a.id} ${a.title}${a.descriptionFull ? `\n    ${a.descriptionFull.slice(0, 1200)}` : ''}`)
+          .join('\n')}\n\n`
+      : '';
+    const purpose = String(project.purpose ?? '').trim();
+    const purposeBlock = purpose ? `=== PROJENİN AMACI ===\n${purpose.slice(0, 2000)}\n\n` : '';
+
     const body =
-      `İŞ KALEMİ: #${story.id} — ${story.title} [${story.type}]\n` +
+      `MÜŞTERİ: ${project.customer?.name ?? '?'} · PROJE: ${project.name}\n\n` +
+      purposeBlock +
+      ancestorBlock +
+      (envContext ? `${envContext}\n\n` : '') +
+      `=== GELİŞTİRİLECEK USER STORY ===\n#${story.id} — ${story.title} [${story.type}/${story.state}]\n` +
       `MEVCUT AÇIKLAMA: ${story.descriptionFull || '(boş)'}\n` +
       (story.acceptance ? `MEVCUT KABUL KRİTERLERİ: ${story.acceptance}\n` : '') +
-      (children.length ? `ALT GÖREVLER (${children.length}):\n${children.map((c) => `- #${c.id} [${c.state}] ${c.title}${c.descriptionFull ? `: ${c.descriptionFull.slice(0, 300)}` : ''}`).join('\n')}\n` : '') +
-      (comments.length ? `YORUMLAR:\n${comments.map((c) => `${c.by ?? '?'}: ${c.text.slice(0, 300)}`).join('\n')}\n` : '') +
-      (envContext ? `\n${envContext}\n` : '');
+      (children.length ? `\nALT GÖREVLER (${children.length}) — uygulama detayı:\n${children.map((c) => `- #${c.id} [${c.state}] ${c.title}${c.descriptionFull ? `: ${c.descriptionFull.slice(0, 300)}` : ''}`).join('\n')}\n` : '') +
+      (comments.length ? `\nYORUMLAR:\n${comments.map((c) => `${c.by ?? '?'}: ${c.text.slice(0, 300)}`).join('\n')}\n` : '');
 
-    let draft: { description: string; acceptance: string[] } | null = null;
+    let draft: any = null;
     for (const model of ['meta/llama-3.3-70b-instruct', 'meta/llama-3.1-8b-instruct']) {
       const data = await runAgent({
-        run_id: `story-fill-${wid}-${model.includes('70b') ? 'l' : 's'}-${Date.now()}`,
+        run_id: `story-enrich-${wid}-${model.includes('70b') ? 'l' : 's'}-${Date.now()}`,
         workspace_id: project.workspace_id ?? undefined,
         ai_resource: {
-          key: 'ai_story_filler',
-          name: 'AI Story Filler',
+          key: 'ai_story_enricher',
+          name: 'AI Story Enricher',
           system_prompt:
-            'Sen kıdemli bir D365 iş analistisin. Verilen user story için EKSİK olan açıklama ve kabul kriterlerini profesyonelce TASLAK olarak yaz. ' +
-            'Başlık, alt görevler, yorumlar ve teknoloji bağlamından (platform/özel uygulama/ISV) yararlan; iş amacı + kapsam/etkilenen süreç + varsa veri/adım detayı içeren 2-4 paragraflık Türkçe açıklama üret. ' +
-            'Kabul kriterleri ÖLÇÜLEBİLİR olsun (3-6 madde, her biri tek cümle, "…yapılabildiğinde/…doğrulandığında" kalıbında). Uydurma kayıt numarası/tarih yazma; bilinmeyeni "örn." ile işaretle.\n' +
-            'ÇIKTI FORMATI — yanıtın TAMAMI şu tek JSON nesnesi olsun; content alanına SADECE taslak JSON\'unu string olarak koy:\n' +
-            '{"draft":{"kind":"note","subject":null,"content":"{\\"description\\":\\"...açıklama metni...\\",\\"acceptance\\":[\\"kriter 1\\",\\"kriter 2\\"]}","recipients":[],"citations":[]},"reasoning_summary":"1 cümle","confidence":0.9,"needs_escalation":false,"escalate_to":null,"tool_intents":[]}\n' +
+            'Sen kıdemli bir D365 iş analistisin. Verilen user story\'yi ÜST BAĞLAMINDAN (Epic/Feature), PROJENİN AMACINDAN ve ÇÖZÜM YIĞINININ (platform/özel uygulama/ISV) ışığında GELİŞTİR. ' +
+            'Story\'nin mevcut metni varsa koru ve zenginleştir, yoksa sıfırdan yaz. Epic/Feature\'daki iş hedefini story seviyesine indir; bu story o hedefin HANGİ parçasını karşılıyor, açıkça yaz. ' +
+            'Kullanılan ürüne özgü ol (BC/F&SCM/web, ISV adları) — bağlamda geçmeyen ürün/modül adı UYDURMA. Uydurma kayıt numarası/tarih yazma; bilinmeyeni "örn." ile işaretle. Tamamen Türkçe yaz (D365 alan/menü adları İngilizce kalabilir).\n' +
+            'draft.content alanına, AYNEN aşağıdaki başlıkları kullanarak düz metin yaz (JSON DEĞİL, başlıkları birebir kopyala):\n' +
+            '## ACIKLAMA\n(2-4 paragraf: iş ihtiyacı, kapsam, etkilenen süreç/ürün)\n' +
+            // NB: don't hand the model an ellipsis "pattern" here — it appends
+            // it literally to every line ("... doğrulandığında") and the text
+            // ships to ADO that way. Give a full example sentence instead.
+            '## KABUL\n(3-6 ÖLÇÜLEBİLİR madde, her satır "- " ile başlar. Her madde TAM ve dilbilgisel olarak eksiksiz bir cümle olsun; doğrulanabilir bir sonucu anlatsın. Örnek: "Kullanıcı Report Centre ekranından seçtiği dönem için raporu Excel olarak dışa aktarabilir." Maddenin sonuna kalıp/ek ifade ekleme.)\n' +
+            '## DEGER\n(1-2 cümle: Epic/Feature hedefine katkısı)\n' +
+            '## KAPSAM_DISI\n(0-3 madde, her satır "- " ile başlar)\n' +
+            '## SORULAR\n(danışmanın müşteriye sorması gereken 0-4 net soru, her satır "- " ile başlar)\n' +
+            '## GOREVLER\n(0-5 alt görev başlığı, her satır "- " ile başlar)\n' +
+            'ÇIKTI FORMATI — yanıtın TAMAMI şu tek JSON nesnesi olsun; yukarıdaki başlıklı METNİN TAMAMINI draft.content alanına koy:\n' +
+            '{"draft":{"kind":"note","subject":null,"content":"<BAŞLIKLI METİN BURAYA>","recipients":[],"citations":[]},"reasoning_summary":"1 cümle","confidence":0.9,"needs_escalation":false,"escalate_to":null,"tool_intents":[]}\n' +
             'JSON dışında hiçbir metin yazma.',
           provider: 'nvidia',
           model,
@@ -666,31 +761,158 @@ export class StoryDocsController {
           tools: [],
           confidence_threshold: 0.5,
         },
-        activity: { id: `sf-${Date.now()}`, channel: 'manual', subject: `${story.title} — içerik taslağı`, body, priority: 'normal', customer: null },
+        activity: { id: `se-${Date.now()}`, channel: 'manual', subject: `${story.title} — story geliştirme`, body, priority: 'normal', customer: null },
         context: { thread: [], rag_hints: [], rag_hits: [] },
         options: { max_tool_intents: 0 },
       });
       if (data) {
-        const raw = data?.draft?.content;
-        let parsed: any = null;
-        if (raw && typeof raw === 'object' && (raw as any).description) parsed = raw;
-        else {
-          const content = String(raw ?? '');
-          try { parsed = JSON.parse(content.slice(content.indexOf('{'), content.lastIndexOf('}') + 1)); } catch { /* next model */ }
-        }
-        if (parsed?.description) {
-          draft = {
-            description: String(parsed.description).slice(0, 4000),
-            acceptance: (Array.isArray(parsed.acceptance) ? parsed.acceptance : []).map((a: any) => String(a).slice(0, 300)).slice(0, 8),
-          };
-          break;
-        }
+        const parsed = parseEnrichment(data?.draft?.content);
+        if (parsed) { draft = parsed; break; }
       }
-      this.logger.warn(`draft-content: ${model} başarısız/ayrıştırılamadı — sıradaki model`);
+      this.logger.warn(`enrich #${wid}: ${model} başarısız/ayrıştırılamadı — sıradaki model`);
     }
     if (!draft) return { ok: false, detail: 'taslak üretilemedi — tekrar deneyin' };
-    await this.audit.log({ actorType: 'system', action: 'execute', entityType: 'projects', entityId: id, summary: `Story #${story.id} için içerik taslağı üretildi (ADO'ya yazılmadı)` });
-    return { ok: true, story: { id: story.id, title: story.title }, draft };
+
+    return {
+      ok: true,
+      story: { id: story.id, title: story.title },
+      // Surfaced so the reviewer can see WHICH context shaped the draft — and
+      // notice when the real gap is a missing Epic link or an unset purpose.
+      context: {
+        ancestors: chain.map((a) => ({ id: a.id, type: a.type, title: a.title })),
+        hasPurpose: Boolean(purpose),
+        hasStack: envContext.includes('ÇÖZÜM YIĞINI'),
+        children: children.length,
+      },
+      draft,
+    };
+  }
+
+  @Roles('consultant')
+  @Post('projects/:id/stories/:wid/enrich')
+  async enrich(@Param('id') id: string, @Param('wid') wid: string) {
+    const project = await (this.prisma as any).projects.findUnique({
+      where: { id },
+      include: { customer: { select: { id: true, name: true } } },
+    });
+    if (!project?.devops_org) return { ok: false, detail: 'proje ADO eşlemesi yok' };
+    const res = await this.enrichStory(project, wid);
+    if (res.ok) {
+      await this.audit.log({ actorType: 'system', action: 'execute', entityType: 'projects', entityId: id, summary: `Story #${wid} AI ile geliştirildi (taslak — ADO'ya yazılmadı)` });
+    }
+    return res;
+  }
+
+  // ── Toplu geliştirme: projedeki ZAYIF story'lerin hepsi ───────────────────
+  // Each story costs a 70B call (~1-2 min), so a synchronous request would time
+  // out long before a 20-story sweep finishes. The sweep therefore runs
+  // detached, writing progress to projects.metadata.enrich_run and parking each
+  // draft as a document for review. Nothing reaches ADO without a human
+  // pressing apply on that draft.
+  @Roles('consultant')
+  @Post('projects/:id/stories/enrich-bulk')
+  async enrichBulk(@Param('id') id: string, @Body() body?: { limit?: number; maxScore?: number }) {
+    const project = await (this.prisma as any).projects.findUnique({
+      where: { id },
+      include: { customer: { select: { id: true, name: true } } },
+    });
+    if (!project?.devops_org) return { ok: false, detail: 'proje ADO eşlemesi yok' };
+
+    const meta = (project.metadata as any) ?? {};
+    const running = meta.enrich_run;
+    if (running && !running.finishedAt) {
+      return { ok: false, detail: `zaten çalışıyor (${running.done}/${running.total}) — bitmesini bekleyin`, run: running };
+    }
+    const audit = meta.story_audit;
+    if (!audit?.rows?.length) return { ok: false, detail: 'önce "User story analizi" çalıştırın (zayıf story listesi ondan geliyor)' };
+
+    const maxScore = Math.min(Math.max(Number(body?.maxScore ?? 50), 1), 100);
+    const limit = Math.min(Math.max(Number(body?.limit ?? 10), 1), 25); // hard cap: free-tier NIM quota
+    const targets = (audit.rows as any[])
+      .filter((r) => Number(r.score ?? 0) < maxScore)
+      .sort((a, b) => Number(a.score ?? 0) - Number(b.score ?? 0))
+      .slice(0, limit);
+    if (!targets.length) return { ok: false, detail: `puanı ${maxScore} altında story yok — geliştirilecek bir şey görünmüyor` };
+
+    const run = { startedAt: new Date().toISOString(), finishedAt: null as string | null, total: targets.length, done: 0, failed: 0, maxScore, drafts: [] as any[] };
+    await (this.prisma as any).projects.update({ where: { id }, data: { metadata: { ...meta, enrich_run: run } } });
+
+    // Detached sweep. tenantStore is re-entered explicitly: the HTTP request
+    // that carried the tenant context has already returned by then.
+    const wsId = currentWorkspaceId();
+    void tenantStore.run({ workspaceId: wsId as string }, async () => {
+      for (const t of targets) {
+        try {
+          const res = await this.enrichStory(project, String(t.id));
+          if (res.ok) {
+            const doc = await this.prisma.documents.create({
+              data: {
+                workspace_id: project.workspace_id ?? undefined,
+                title: `#${t.id} ${res.story.title} — Story Geliştirme Taslağı`.slice(0, 400),
+                source_type: 'agent_draft',
+                mime_type: 'application/json',
+                status: 'uploaded',
+                customer_id: project.customer_id ?? undefined,
+                project_id: project.id,
+                metadata: {
+                  doc_kind: 'story_enrichment',
+                  wid: String(t.id),
+                  story: res.story,
+                  context: res.context,
+                  draft: res.draft,
+                  previousScore: t.score ?? null,
+                  generatedAt: new Date().toISOString(),
+                },
+              },
+            });
+            run.drafts.push({ wid: String(t.id), title: res.story.title, docId: doc.id, previousScore: t.score ?? null });
+          } else {
+            run.failed++;
+          }
+        } catch (e) {
+          run.failed++;
+          this.logger.warn(`enrich-bulk #${t.id}: ${(e as Error).message}`);
+        }
+        run.done++;
+        // Persist after every story so the UI can follow along and a crash
+        // mid-sweep still leaves the completed drafts reviewable.
+        const fresh = await (this.prisma as any).projects.findUnique({ where: { id }, select: { metadata: true } });
+        await (this.prisma as any).projects.update({
+          where: { id },
+          data: { metadata: { ...((fresh?.metadata as any) ?? {}), enrich_run: run } },
+        }).catch(() => {});
+      }
+      run.finishedAt = new Date().toISOString();
+      const fresh = await (this.prisma as any).projects.findUnique({ where: { id }, select: { metadata: true } });
+      await (this.prisma as any).projects.update({
+        where: { id },
+        data: { metadata: { ...((fresh?.metadata as any) ?? {}), enrich_run: run } },
+      }).catch(() => {});
+      await this.audit.log({ actorType: 'system', action: 'execute', entityType: 'projects', entityId: id, summary: `Toplu story geliştirme: ${run.drafts.length} taslak hazır, ${run.failed} başarısız (${run.total} story)` });
+    });
+
+    return { ok: true, started: true, total: targets.length, detail: `${targets.length} story arka planda geliştiriliyor — taslaklar hazır oldukça listelenecek` };
+  }
+
+  // Progress + the drafts waiting for review.
+  @Roles('consultant')
+  @Get('projects/:id/enrich-run')
+  async enrichRun(@Param('id') id: string) {
+    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { metadata: true } });
+    const run = ((project?.metadata as any) ?? {}).enrich_run ?? null;
+    const pending = await this.prisma.documents.findMany({
+      where: { project_id: id, status: 'uploaded', source_type: 'agent_draft' },
+      orderBy: { created_at: 'desc' },
+      take: 40,
+      select: { id: true, title: true, metadata: true, created_at: true },
+    });
+    return {
+      ok: true,
+      run,
+      drafts: pending
+        .filter((d) => ((d.metadata as any) ?? {}).doc_kind === 'story_enrichment')
+        .map((d) => ({ docId: d.id, title: d.title, ...((d.metadata as any) ?? {}) })),
+    };
   }
 
   @Roles('consultant')
@@ -698,7 +920,7 @@ export class StoryDocsController {
   async applyContent(
     @Param('id') id: string,
     @Param('wid') wid: string,
-    @Body() body: { description?: string; acceptance?: string[] | string },
+    @Body() body: { description?: string; acceptance?: string[] | string; docId?: string },
   ) {
     const project = await (this.prisma as any).projects.findUnique({ where: { id } });
     if (!project?.devops_org) return { ok: false, detail: 'proje ADO eşlemesi yok' };
@@ -717,6 +939,16 @@ export class StoryDocsController {
       ...(acceptanceList.length ? { acceptance: `<div>${acceptanceList.map(esc).join('<br/>')}</div>` } : {}),
     }, conn);
     if (!res.ok) return { ok: false, detail: res.detail };
+    // Applied bulk drafts leave the review queue (status flips to processed).
+    if (body?.docId) {
+      const doc = await this.prisma.documents.findFirst({ where: { id: body.docId, project_id: id } });
+      if (doc) {
+        await this.prisma.documents.update({
+          where: { id: doc.id },
+          data: { status: 'processed' as any, metadata: { ...((doc.metadata as any) ?? {}), appliedAt: new Date().toISOString() } },
+        }).catch(() => {});
+      }
+    }
     await this.audit.log({ actorType: 'user', action: 'update', entityType: 'projects', entityId: id, summary: `Story #${wid} içeriği AI taslağıyla dolduruldu (kullanıcı onaylı; açıklama ${description.length} kr, ${acceptanceList.length} kabul kriteri)` });
     return { ok: true, id: wid };
   }

@@ -217,7 +217,7 @@ export class ProjectsController {
   @Patch(':id')
   async update(@Param('id') id: string, @Body() body: any) {
     const allowed: Record<string, unknown> = {};
-    for (const k of ['name', 'description', 'status', 'devops_org', 'devops_project', 'teams_team_id', 'teams_channel_ids', 'teams_chat_ids', 'mail_keywords', 'lead_user_id', 'start_date', 'end_date', 'repos', 'isvs'] as const) {
+    for (const k of ['name', 'description', 'status', 'devops_org', 'devops_project', 'teams_team_id', 'teams_channel_ids', 'teams_chat_ids', 'mail_keywords', 'lead_user_id', 'start_date', 'end_date', 'repos', 'isvs', 'purpose'] as const) {
       if (body[k] !== undefined) allowed[k] = body[k];
     }
     const row = await (this.prisma as any).projects.update({ where: { id }, data: allowed });

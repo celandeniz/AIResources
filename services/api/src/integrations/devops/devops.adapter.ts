@@ -272,6 +272,45 @@ export async function fetchChildItems(org: string, parent: DevOpsItem): Promise<
   }
 }
 
+// Ancestor chain via hierarchy-REVERSE links: User Story → Feature → Epic.
+// Story enrichment reads the business goal from up here — a story's own text
+// rarely states why the work exists, but its Feature/Epic almost always does.
+// Returns nearest-parent-first; stops at the top or maxDepth (cycle-safe).
+export async function fetchAncestors(
+  org: string,
+  item: DevOpsItem,
+  maxDepth = 3,
+): Promise<(DevOpsItem & { descriptionFull: string })[]> {
+  if (!devopsConfigured()) return [];
+  const out: (DevOpsItem & { descriptionFull: string })[] = [];
+  const seen = new Set<string>([String(item.id)]);
+  let current: DevOpsItem = item;
+  try {
+    for (let depth = 0; depth < maxDepth; depth++) {
+      const parentId = (current.relations ?? [])
+        .filter((r) => /Hierarchy-Reverse/i.test(r.rel))
+        .map((r) => r.url.match(/workItems\/(\d+)/i)?.[1])
+        .find((x): x is string => Boolean(x));
+      if (!parentId || seen.has(parentId)) break;
+      seen.add(parentId);
+      const w = await adoFetch(
+        `https://dev.azure.com/${org}/_apis/wit/workitems/${parentId}?$expand=relations&api-version=7.0`,
+        process.env.ADO_PAT!,
+      );
+      const parent = {
+        ...mapWorkItem(w, org),
+        descriptionFull: String(w.fields?.['System.Description'] ?? '')
+          .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000),
+      };
+      out.push(parent);
+      current = parent;
+    }
+  } catch {
+    // Partial chain is still useful — return whatever resolved.
+  }
+  return out;
+}
+
 // One work item with the FULL (untruncated) description — doc generation needs
 // the whole text, not the 1000-char ingest slice.
 export async function fetchWorkItemFull(org: string, id: string): Promise<(DevOpsItem & { descriptionFull: string; acceptance?: string }) | null> {

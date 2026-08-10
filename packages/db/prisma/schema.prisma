@@ -429,6 +429,10 @@ model projects {
   // metadata.repo_profile = {analyzedAt, repos:[{repo, kind, apps, framework, readme}]}
   repos               Json    @default("[]")
   isvs                Json    @default("[]")
+  // Why this project exists, in the consultant's own words (scope, business
+  // goal, go-live drivers). `description` is auto-filled by the Cosmos/ADO
+  // sync and carries no meaning, so story enrichment reads THIS field.
+  purpose             String? @db.Text
   created_at     DateTime  @default(now()) @db.Timestamptz(6)
   updated_at     DateTime  @updatedAt @db.Timestamptz(6)
 

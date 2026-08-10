@@ -195,6 +195,87 @@ function StackBadges({ p }: { p: any }) {
   );
 }
 
+// Enrichment draft → editable review state. The non-editable parts (business
+// value, out-of-scope, open questions, suggested tasks) ride along so the panel
+// can show WHY the description reads the way it does.
+function fillFromDraft(wid: string, title: string | undefined, draft: any, context?: any, docId?: string) {
+  return {
+    storyId: wid,
+    title,
+    docId,
+    context,
+    description: draft?.description ?? '',
+    acceptance: (draft?.acceptance ?? []).join('\n'),
+    businessValue: draft?.business_value ?? '',
+    scopeOut: draft?.scope_out ?? [],
+    openQuestions: draft?.open_questions ?? [],
+    suggestedTasks: draft?.suggested_tasks ?? [],
+  };
+}
+
+// Bulk enrichment: the sweep runs server-side (each story is a ~1-2 min model
+// call), so this only starts it and follows progress, listing each finished
+// draft for one-by-one review.
+function BulkEnrich({ projectId, weak, onPick }: { projectId: string; weak: number; onPick: (d: any) => void }) {
+  const [state, setState] = useState<any>(null);
+  const [starting, setStarting] = useState(false);
+
+  const poll = useCallback(async () => {
+    try { setState(await api(`/projects/${projectId}/enrich-run`)); } catch { /* geçici */ }
+  }, [projectId]);
+
+  useEffect(() => { poll(); }, [poll]);
+  // Only poll while a sweep is actually in flight.
+  useEffect(() => {
+    if (!state?.run || state.run.finishedAt) return;
+    const t = setInterval(poll, 5000);
+    return () => clearInterval(t);
+  }, [state?.run?.finishedAt, state?.run, poll]);
+
+  async function start() {
+    setStarting(true);
+    try {
+      const r: any = await api(`/projects/${projectId}/stories/enrich-bulk`, { method: 'POST', body: JSON.stringify({ limit: 10 }) });
+      if (!r?.ok) throw new Error(r?.detail ?? 'başlatılamadı');
+      toast.success(r.detail);
+      await poll();
+    } catch (e: any) { toast.error(e.message); } finally { setStarting(false); }
+  }
+
+  const run = state?.run;
+  const drafts: any[] = state?.drafts ?? [];
+  const active = run && !run.finishedAt;
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-muted/20 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">🤖 Toplu story geliştirme</span>
+        <span className="text-xs text-muted-foreground">{weak} story 50 puanın altında — Epic/Feature + proje amacı + ürün yığınından geliştirilir.</span>
+        <Button size="sm" className="ml-auto" onClick={start} disabled={starting || active}>
+          {active ? `Çalışıyor… ${run.done}/${run.total}` : starting ? 'Başlatılıyor…' : 'En zayıf 10 story’yi geliştir'}
+        </Button>
+      </div>
+      {run && (
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          {active ? '⏳ arka planda çalışıyor' : '✅ tamamlandı'} · {run.done}/{run.total} işlendi · {run.drafts?.length ?? 0} taslak hazır
+          {run.failed > 0 && ` · ${run.failed} başarısız`}
+        </p>
+      )}
+      {drafts.length > 0 && (
+        <ul className="mt-2 divide-y divide-border">
+          {drafts.map((d) => (
+            <li key={d.docId} className="flex items-center gap-2 py-1.5 text-sm">
+              <Badge variant="outline">#{d.wid}</Badge>
+              <span className="min-w-0 flex-1 truncate">{d.story?.title ?? d.title}</span>
+              {d.previousScore != null && <Badge variant="danger">{d.previousScore}/100</Badge>}
+              <Button size="sm" variant="outline" onClick={() => onPick(d)}>İncele</Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectId: string; audit: any; adoOrg?: string; adoProject?: string; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [docBusy, setDocBusy] = useState<string | null>(null);
@@ -228,15 +309,16 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
     } catch (e: any) { toast.error(e.message); } finally { setDocBusy(null); }
   }
 
-  // Story İçerik Asistanı: AI drafts the description + acceptance criteria;
-  // the user edits, then explicitly writes to ADO (button = human approval),
-  // and the readiness pre-analysis re-runs automatically.
-  async function draftFill(wid: string) {
+  // Story Geliştirme Asistanı: develops the story from its Epic/Feature, the
+  // project purpose and the product stack. The user edits, then explicitly
+  // writes to ADO (button = human approval); the readiness pre-analysis
+  // re-runs automatically afterwards.
+  async function enrichStory(wid: string) {
     setDocBusy(wid);
     try {
-      const r: any = await api(`/projects/${projectId}/stories/${wid}/draft-content`, { method: 'POST' });
+      const r: any = await api(`/projects/${projectId}/stories/${wid}/enrich`, { method: 'POST' });
       if (!r?.ok) throw new Error(r?.detail ?? 'taslak üretilemedi');
-      setFill({ storyId: wid, title: r.story?.title, description: r.draft.description ?? '', acceptance: (r.draft.acceptance ?? []).join('\n') });
+      setFill(fillFromDraft(wid, r.story?.title, r.draft, r.context));
     } catch (e: any) { toast.error(e.message); } finally { setDocBusy(null); }
   }
   async function applyFill() {
@@ -248,6 +330,7 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
         body: JSON.stringify({
           description: fill.description,
           acceptance: String(fill.acceptance ?? '').split('\n').map((s: string) => s.trim()).filter(Boolean),
+          ...(fill.docId ? { docId: fill.docId } : {}),
         }),
       });
       if (!r?.ok) throw new Error(r?.detail ?? 'ADO yazımı başarısız');
@@ -276,6 +359,7 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
   }
 
   const rows: any[] = audit?.rows ?? [];
+  const weak = rows.filter((r) => Number(r.score ?? 0) < 50).length;
   return (
     <Card className="mt-6 p-5">
       <SectionTitle right={
@@ -286,13 +370,14 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
           <Button size="sm" variant="outline" onClick={run} disabled={busy}>{busy ? 'Analiz ediliyor…' : audit ? 'Yeniden analiz et' : 'User story analizi'}</Button>
         </div>
       }>User Story Kalitesi &amp; Dokümantasyon</SectionTitle>
+      {weak > 0 && <BulkEnrich projectId={projectId} weak={weak} onPick={(d: any) => setFill(fillFromDraft(d.wid, d.story?.title, d.draft, d.context, d.docId))} />}
       {planView?.notReady && (
         <div className="mb-4 rounded-lg border border-amber-500/50 bg-amber-500/5 p-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-sm font-semibold">⚠️ Ön Analiz — #{planView.story?.id} doküman üretimine hazır değil</span>
             <div className="flex gap-2">
               {(planView.checks ?? []).some((c: any) => c.key === 'icerik' && !c.ok) && (
-                <Button size="sm" onClick={() => draftFill(planView.storyId)} disabled={docBusy === planView.storyId}>
+                <Button size="sm" onClick={() => enrichStory(planView.storyId)} disabled={docBusy === planView.storyId}>
                   {docBusy === planView.storyId ? 'Taslak hazırlanıyor…' : '✍️ AI ile doldur'}
                 </Button>
               )}
@@ -329,7 +414,7 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
       {fill && (
         <div className="mb-4 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4">
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm font-semibold">✍️ İçerik Taslağı — #{fill.storyId} {fill.title}</span>
+            <span className="text-sm font-semibold">✍️ Story Geliştirme Taslağı — #{fill.storyId} {fill.title}</span>
             <div className="flex gap-2">
               <Button size="sm" onClick={applyFill} disabled={docBusy === fill.storyId}>
                 {docBusy === fill.storyId ? 'Yazılıyor…' : "✅ Onayla ve ADO'ya yaz"}
@@ -337,7 +422,21 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
               <Button size="sm" variant="ghost" onClick={() => setFill(null)}>Vazgeç</Button>
             </div>
           </div>
+          {/* Which upstream context actually shaped this draft — a missing Epic
+              link or an unset purpose is usually the real reason output is thin. */}
+          <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs">
+            {(fill.context?.ancestors ?? []).map((a: any) => (
+              <Badge key={a.id} variant="outline">{a.type} #{a.id}: {String(a.title).slice(0, 40)}</Badge>
+            ))}
+            {!(fill.context?.ancestors ?? []).length && <Badge variant="warning">Epic/Feature bağlantısı yok — üst bağlam kullanılamadı</Badge>}
+            <Badge variant={fill.context?.hasPurpose ? 'success' : 'warning'}>{fill.context?.hasPurpose ? 'proje amacı ✓' : 'proje amacı girilmemiş'}</Badge>
+            <Badge variant={fill.context?.hasStack ? 'success' : 'neutral'}>{fill.context?.hasStack ? 'ürün yığını ✓' : 'ürün yığını yok'}</Badge>
+            {fill.context?.children > 0 && <Badge variant="neutral">{fill.context.children} alt görev</Badge>}
+          </div>
           <p className="mb-2 text-xs text-muted-foreground">Taslağı düzenleyin; &quot;Onayla&quot; ile açıklama + kabul kriterleri ADO iş kalemine yazılır ve ön analiz otomatik tekrarlanır. Onaylamadan hiçbir şey yazılmaz.</p>
+          {fill.businessValue && (
+            <p className="mb-2 rounded bg-background/60 p-2 text-xs"><strong>İş değeri:</strong> {fill.businessValue}</p>
+          )}
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs text-muted-foreground">Açıklama</label>
@@ -356,6 +455,25 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
               />
             </div>
           </div>
+          {/* Analyst-side output: not written to ADO, but what a consultant
+              needs to act on before the story is truly ready. */}
+          {(fill.scopeOut?.length || fill.openQuestions?.length || fill.suggestedTasks?.length) ? (
+            <div className="mt-3 grid gap-3 text-xs md:grid-cols-3">
+              {fill.scopeOut?.length > 0 && (
+                <div><p className="mb-1 font-medium text-muted-foreground">Kapsam dışı</p>
+                  <ul className="ml-4 list-disc space-y-0.5">{fill.scopeOut.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul></div>
+              )}
+              {fill.openQuestions?.length > 0 && (
+                <div><p className="mb-1 font-medium text-amber-500">❓ Müşteriye sorulacaklar</p>
+                  <ul className="ml-4 list-disc space-y-0.5">{fill.openQuestions.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul></div>
+              )}
+              {fill.suggestedTasks?.length > 0 && (
+                <div><p className="mb-1 font-medium text-muted-foreground">Önerilen alt görevler</p>
+                  <ul className="ml-4 list-disc space-y-0.5">{fill.suggestedTasks.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul>
+                  <p className="mt-1 text-[11px] text-muted-foreground">(öneri — ADO&apos;ya otomatik açılmaz)</p></div>
+              )}
+            </div>
+          ) : null}
         </div>
       )}
       {planView && !planView.notReady && (
@@ -449,7 +567,7 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
                   <td className="px-3 py-2 text-right">
                     <div className="flex justify-end gap-1">
                       {r.score < 50 && (
-                        <Button size="sm" variant="ghost" title="AI ile açıklama + kabul kriteri taslağı" disabled={docBusy === String(r.id)} onClick={() => draftFill(String(r.id))}>✍️</Button>
+                        <Button size="sm" variant="ghost" title="AI ile açıklama + kabul kriteri taslağı" disabled={docBusy === String(r.id)} onClick={() => enrichStory(String(r.id))}>✍️</Button>
                       )}
                       <Button size="sm" variant="outline" disabled={docBusy === String(r.id)} onClick={() => makePlan(String(r.id))}>
                         {docBusy === String(r.id) ? 'Hazırlanıyor…' : '📋 Plan hazırla'}
@@ -549,6 +667,7 @@ function MappingsSheet({ p, onSaved }: { p: any; onSaved: () => void }) {
   const [keywords, setKeywords] = useState(((p.mail_keywords as string[]) ?? []).join(', '));
   // WS6 tech stack: one repo per line "owner/name | bc-al|fno-xpp|web [| branch]",
   // one ISV per line "Ad | Publisher".
+  const [purpose, setPurpose] = useState(p.purpose ?? '');
   const [repos, setRepos] = useState(((p.repos as any[]) ?? []).map((r: any) => [r.repo, r.kind, r.branch].filter(Boolean).join(' | ')).join('\n'));
   const [isvs, setIsvs] = useState(((p.isvs as any[]) ?? []).filter((i: any) => (i.source ?? 'manual') === 'manual').map((i: any) => [i.name, i.publisher].filter(Boolean).join(' | ')).join('\n'));
   const [teams, setTeams] = useState<any[]>([]);
@@ -584,6 +703,7 @@ function MappingsSheet({ p, onSaved }: { p: any; onSaved: () => void }) {
         body: JSON.stringify({
           devops_org: devopsOrg || null,
           devops_project: devopsProject || null,
+          purpose: purpose.trim() || null,
           teams_team_id: teamId || null,
           teams_channel_ids: channels.split(',').map((s: string) => s.trim()).filter(Boolean),
           mail_keywords: keywords.split(',').map((s: string) => s.trim()).filter(Boolean),
@@ -614,6 +734,15 @@ function MappingsSheet({ p, onSaved }: { p: any; onSaved: () => void }) {
       <SheetTrigger asChild><Button variant="outline" size="sm"><Settings2 className="size-4" /> Eşlemeler</Button></SheetTrigger>
       <SheetContent title={`${p.name} — kanal eşlemeleri`}>
         <div className="space-y-4">
+          <Field label="Projenin amacı (story geliştirmede kullanılır)">
+            <textarea
+              className="h-24 w-full rounded-md border border-border bg-background p-2 text-sm"
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value)}
+              placeholder="Örn: AGROZAN'ın NAV 2016'dan BC 24'e geçişi; hedef Ocak go-live, öncelik satın alma ve depo süreçleri, Continia ile e-fatura entegrasyonu."
+            />
+            <p className="mt-1 text-xs text-muted-foreground">Boş bırakılırsa AI story&apos;leri iş hedefini bilmeden geliştirir — çıktı genel kalır.</p>
+          </Field>
           <Field label="ADO organizasyonu"><Input value={devopsOrg} onChange={(e) => setDevopsOrg(e.target.value)} placeholder="dynamicsops" /></Field>
           <Field label="ADO projesi"><Input value={devopsProject} onChange={(e) => setDevopsProject(e.target.value)} placeholder="Contoso-FO" /></Field>
           <Field label="Teams takım ID">
