@@ -4,6 +4,8 @@ import { QueueService } from '../../queue/queue.service';
 import { AuditService } from '../../common/audit.service';
 import { emitStreamEvent } from '../../common/events';
 import { detectSystemEmail } from '../../common/system-email';
+import { currentWorkspaceId } from '../../common/tenant';
+import { resolveProject } from '../projects/project-resolver';
 import type { ActivityChannel, Priority } from '@dynops/shared';
 
 // Owner identities — addresses the platform OWNER sends from. When an inbound
@@ -111,7 +113,7 @@ export class ActivitiesService {
   }
 
   // Generic ingestion (mock email/Teams/OpsConnect/DevOps/GitHub/BC). Idempotent by (source_id, external_id).
-  async ingest(input: { source_id?: string; channel: ActivityChannel; external_id?: string; from?: string; subject?: string; body?: string; customer_id?: string; project_id?: string; category?: string; to?: string[]; cc?: string[]; conversation_id?: string; headers?: Record<string, string> }) {
+  async ingest(input: { source_id?: string; channel: ActivityChannel; external_id?: string; from?: string; subject?: string; body?: string; customer_id?: string; project_id?: string; category?: string; to?: string[]; cc?: string[]; conversation_id?: string; headers?: Record<string, string>; metadata?: Record<string, unknown> }) {
     if (input.source_id && input.external_id) {
       const existing = await this.prisma.activities.findFirst({ where: { source_id: input.source_id, external_id: input.external_id } });
       if (existing) return { activityId: existing.id, deduped: true };
@@ -122,6 +124,21 @@ export class ActivitiesService {
       const domain = input.from.split('@')[1];
       const c = await this.prisma.customers.findFirst({ where: { domain } });
       customerId = c?.id;
+    }
+
+    // Project attribution (Project Hub): ADO org/project → Teams channel →
+    // customer + mail keywords. Best-effort; never blocks ingestion.
+    let projectId = input.project_id;
+    if (!projectId) {
+      const meta = (input.metadata ?? {}) as any;
+      projectId = (await resolveProject(this.prisma, currentWorkspaceId() ?? 'default', {
+        customer_id: customerId ?? null,
+        adoOrg: meta.ado?.org ?? null,
+        adoProject: meta.ado?.project ?? null,
+        teamId: meta.team_id ?? null,
+        channelId: meta.channel_id ?? null,
+        subject: input.subject ?? null,
+      })) ?? undefined;
     }
 
     // System-generated email recognition. Auto-generated mail (no-reply senders,
@@ -147,10 +164,11 @@ export class ActivitiesService {
         body: input.body,
         category: input.category,
         customer_id: customerId,
-        project_id: input.project_id,
+        project_id: projectId,
         status: sys.system ? 'archived' : ownerReply ? 'completed' : 'new',
         completed_at: ownerReply ? new Date() : undefined,
         metadata: {
+          ...(input.metadata ?? {}),
           from: input.from,
           to: input.to ?? [],
           cc: input.cc ?? [],
@@ -170,6 +188,7 @@ export class ActivitiesService {
     const skipReason = sys.system ? `system-generated: ${sys.reason}` : ownerReply ? 'owner replied — no self-addressed draft' : null;
     await this.audit.log({ actorType: 'system', action: 'ingest', entityType: 'activities', entityId: activity.id, activityId: activity.id, summary: skipReason ? `Ingested from ${input.channel} — skipped (${skipReason})` : `Ingested from ${input.channel}` });
     emitStreamEvent({ type: 'activity', workspaceId: activity.workspace_id, payload: activity });
+    if (projectId) emitStreamEvent({ type: 'project', workspaceId: activity.workspace_id, payload: { projectId, activityId: activity.id } });
     // Skip drafting/approval for system-generated mail AND owner self-replies.
     if (skipDraft) return { activityId: activity.id, skipped: true, reason: skipReason };
     const jobId = await this.queue.enqueueActivity(activity.id);

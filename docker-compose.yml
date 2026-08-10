@@ -45,6 +45,14 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      # NVIDIA NIM (build.nvidia.com free APIs) — the PRIMARY provider for the
+      # seeded resources. Empty ⇒ nvidia resources fall back to the deterministic
+      # stub (set the key, or switch resources to Ollama in the Directory).
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_BASE_URL: ${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_MAX_CONCURRENCY: ${NVIDIA_MAX_CONCURRENCY:-2}
+      NVIDIA_MAX_TOKENS: ${NVIDIA_MAX_TOKENS:-4096}
+      NVIDIA_TIMEOUT_S: ${NVIDIA_TIMEOUT_S:-420}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -54,8 +62,8 @@ services:
       # Google Gemini (Generative Language API). Empty ⇒ gemini resources fall back to stub.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-      # When a cloud provider errors (e.g. Gemini 503 on free tier), reason falls
-      # back to this local Ollama model before the deterministic stub.
+      # When a cloud provider errors (e.g. NIM 429 / Gemini 503 on free tier),
+      # reason falls back to this local Ollama model before the deterministic stub.
       OLLAMA_FALLBACK_MODEL: ${OLLAMA_FALLBACK_MODEL:-qwen3}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -64,6 +72,22 @@ services:
     depends_on:
       qdrant:
         condition: service_started
+
+  # Authenticated D365 screenshot sidecar (Playwright) — customer-doc images.
+  shotter:
+    build:
+      context: ./services/shotter
+      dockerfile: Dockerfile
+    environment:
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      STATE_DIR: /state
+      # Sandbox F&O forms load slowly — generous navigation window.
+      NAV_TIMEOUT_MS: ${SHOTTER_NAV_TIMEOUT_MS:-150000}
+      SETTLE_MS: ${SHOTTER_SETTLE_MS:-8000}
+    volumes:
+      - shotterstate:/state
+    ports:
+      - "4600:4600"
 
   api:
     build: *node-build
@@ -81,6 +105,14 @@ services:
       AUTH_MODE: ${AUTH_MODE:-dev}
       JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      # NIM key is read API-side only for free-tier routing decisions
+      # (style distillation default, backtest fast model).
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      # Customer D365 environment secrets are AES-256-GCM encrypted with this
+      # master key (fail-closed: no key ⇒ secret storage refused).
+      CRED_MASTER_KEY: ${CRED_MASTER_KEY:-}
+      # Screenshot sidecar for customer-doc images
+      SHOTTER_URL: ${SHOTTER_URL:-http://shotter:4600}
       # Microsoft Graph (Outlook + Teams) app-only — empty => connectors stay mock/idle
       GRAPH_TENANT_ID: ${GRAPH_TENANT_ID:-}
       GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID:-}
@@ -132,6 +164,10 @@ services:
       OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
       OPENCODE_MODEL: ${OPENCODE_MODEL:-ollama/qwen2.5-coder:14b}
       OPENCODE_AGENT: ${OPENCODE_AGENT:-build}
+      # Multi-repo dev pods: repoKey=serverUrl map (one `opencode serve` per repo
+      # checkout) + long timeout for real compile/test loops.
+      OPENCODE_SERVERS: ${OPENCODE_SERVERS:-}
+      OPENCODE_TIMEOUT_MS: ${OPENCODE_TIMEOUT_MS:-1800000}
       COSMOS_KEY: ${COSMOS_KEY:-}
       COSMOS_CONNECTION_STRING: ${COSMOS_CONNECTION_STRING:-}
       COSMOS_DB: ${COSMOS_DB:-DynOpsCore}
@@ -140,6 +176,40 @@ services:
       ADO_POLL_INTERVAL_MS: ${ADO_POLL_INTERVAL_MS:-300000}
       ADO_PAT: ${ADO_PAT:-}
       ADO_ORGS: ${ADO_ORGS:-}
+      # ADO bidirectional sync: rev-aware update re-ingestion (needs a resolvable
+      # self identity for echo suppression — fail-closed without it), service-hook
+      # receiver secret (empty = webhook disabled), auto state whitelist, and the
+      # optional explicit self identity ("Display Name <email>").
+      ENABLE_ADO_UPDATE_REINGEST: ${ENABLE_ADO_UPDATE_REINGEST:-false}
+      ADO_WEBHOOK_SECRET: ${ADO_WEBHOOK_SECRET:-}
+      ADO_AUTO_STATES: ${ADO_AUTO_STATES:-Active,In Progress,Resolved,Ready for Review}
+      ADO_SELF_IDENTITY: ${ADO_SELF_IDENTITY:-}
+      # Coverage watchdog (org-wide stalled-topic radar). Master switch OFF by
+      # default; dry-run ON by default (detect + notify only, no actions).
+      ENABLE_COVERAGE_WATCHDOG: ${ENABLE_COVERAGE_WATCHDOG:-false}
+      COVERAGE_DRY_RUN: ${COVERAGE_DRY_RUN:-true}
+      COVERAGE_TICK_MS: ${COVERAGE_TICK_MS:-600000}
+      COVERAGE_BACKFILL_DAYS: ${COVERAGE_BACKFILL_DAYS:-14}
+      COVERAGE_MAILBOXES_PER_TICK: ${COVERAGE_MAILBOXES_PER_TICK:-10}
+      COVERAGE_ACTION_COOLDOWN_H: ${COVERAGE_ACTION_COOLDOWN_H:-24}
+      COVERAGE_SLA_UNANSWERED_H: ${COVERAGE_SLA_UNANSWERED_H:-24}
+      COVERAGE_SLA_COMMITMENT_H: ${COVERAGE_SLA_COMMITMENT_H:-48}
+      COVERAGE_SLA_DROPPED_D: ${COVERAGE_SLA_DROPPED_D:-7}
+      COVERAGE_RESOURCE_KEY: ${COVERAGE_RESOURCE_KEY:-ai_executive_assistant}
+      COVERAGE_EXEMPT_MAILBOXES: ${COVERAGE_EXEMPT_MAILBOXES:-}
+      # Autosend (auto-approve-on-timeout): drafts auto-send if not reviewed.
+      # Kill switch OFF by default; guarded by quiet hours + per-customer cap +
+      # human-reply re-check at send time.
+      ENABLE_COVERAGE_AUTOSEND: ${ENABLE_COVERAGE_AUTOSEND:-false}
+      COVERAGE_AUTOSEND_TIMEOUT_H: ${COVERAGE_AUTOSEND_TIMEOUT_H:-4}
+      COVERAGE_QUIET_HOURS: ${COVERAGE_QUIET_HOURS:-18-08}
+      COVERAGE_MAX_AUTOSENDS_PER_CUSTOMER_DAY: ${COVERAGE_MAX_AUTOSENDS_PER_CUSTOMER_DAY:-2}
+      # Teams 1:1/group chats (Microsoft PROTECTED API — needs approval + metered
+      # licensing). Keep off until the tenant is approved.
+      ENABLE_COVERAGE_CHATS: ${ENABLE_COVERAGE_CHATS:-false}
+      COVERAGE_AUTODISCOVER_MAILBOXES: ${COVERAGE_AUTODISCOVER_MAILBOXES:-false}
+      # Project Hub (per-project dashboards + Cosmos project sync)
+      ENABLE_PROJECT_HUB: ${ENABLE_PROJECT_HUB:-true}
       # Business Central (live write adapter) — OAuth client credentials
       BC_TENANT_ID: ${BC_TENANT_ID:-}
       BC_ENVIRONMENT: ${BC_ENVIRONMENT:-Production}
@@ -188,6 +258,23 @@ services:
       # Topic missions (ADO work item / support@ email → Mission Pod)
       ENABLE_TOPIC_MISSIONS: ${ENABLE_TOPIC_MISSIONS:-true}
       SUPPORT_MAILBOXES: ${SUPPORT_MAILBOXES:-support@dynamicsops.com}
+      # Autonomous dev pods (typed mission templates; OFF until OpenCode + repos
+      # are wired). Plan Canvas gates dev-pod plans behind human approval.
+      ENABLE_DEV_PODS: ${ENABLE_DEV_PODS:-false}
+      DEV_POD_TEMPLATES: ${DEV_POD_TEMPLATES:-bc_dev,fscm_dev}
+      PLAN_GATE_TEMPLATES: ${PLAN_GATE_TEMPLATES:-bc_dev,fscm_dev}
+      DEV_POD_REPO: ${DEV_POD_REPO:-dynamicsops/DynOpsBC}
+      DEV_POD_REPO_KEY: ${DEV_POD_REPO_KEY:-dynopsbc}
+      DEV_POD_CI_WORKFLOW: ${DEV_POD_CI_WORKFLOW:-CICD.yaml}
+      DEV_POD_BASE_BRANCH: ${DEV_POD_BASE_BRANCH:-main}
+      DEV_POD_MAX_PR_FILES: ${DEV_POD_MAX_PR_FILES:-40}
+      OPENCODE_MODEL: ${OPENCODE_MODEL:-ollama/qwen2.5-coder:14b}
+      OPENCODE_TIMEOUT_MS: ${OPENCODE_TIMEOUT_MS:-1800000}
+      # Coverage autosend stamping (the sweeper itself runs API-side)
+      ENABLE_COVERAGE_AUTOSEND: ${ENABLE_COVERAGE_AUTOSEND:-false}
+      COVERAGE_AUTOSEND_TIMEOUT_H: ${COVERAGE_AUTOSEND_TIMEOUT_H:-4}
+      # NIM key for free-tier routing defaults (backtest fast model etc.)
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
     depends_on:
       api:
         condition: service_started
@@ -210,3 +297,4 @@ services:
 volumes:
   pgdata:
   qdrantdata:
+  shotterstate:

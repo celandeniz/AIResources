@@ -73,9 +73,81 @@ export interface TeamsMsg {
   from: string;
   text: string;
   createdDateTime: string;
+  // Thread awareness (coverage crawler): replies carry the root message id.
+  replyToId?: string;
+  fromEmail?: string;
+  teamId?: string;
+  channelId?: string;
 }
 
 export interface ChannelRef { teamId: string; teamName: string; channelId: string; channelName: string }
+
+// Discover ALL teams in the tenant (app-only). Needs Group.Read.All.
+// Cached in-process for 1h — team churn is slow and this backs periodic crawls.
+let allTeamsCache: { at: number; teams: { id: string; displayName: string }[] } | null = null;
+export async function discoverAllTeams(): Promise<{ id: string; displayName: string }[]> {
+  if (allTeamsCache && Date.now() - allTeamsCache.at < 3_600_000) return allTeamsCache.teams;
+  const teams: { id: string; displayName: string }[] = [];
+  let url: string | null = `/groups?$filter=resourceProvisioningOptions/Any(x:x eq 'Team')&$select=id,displayName&$top=100`;
+  let pages = 0;
+  while (url && pages < 20) {
+    const page: any = await graphFetch(url);
+    for (const g of page.value ?? []) teams.push({ id: g.id, displayName: g.displayName });
+    url = page['@odata.nextLink'] ?? null;
+    pages++;
+  }
+  allTeamsCache = { at: Date.now(), teams };
+  return teams;
+}
+
+// List channels of one team (used by the Project Hub channel picker).
+export async function listTeamChannels(teamId: string): Promise<{ id: string; displayName: string }[]> {
+  const chans = await graphFetch(`/teams/${teamId}/channels?$select=id,displayName`);
+  return (chans.value ?? []).map((c: any) => ({ id: c.id, displayName: c.displayName }));
+}
+
+// Thread-complete channel read: root messages with $expand=replies, mapped so
+// every message carries teamId/channelId and replies carry replyToId (root id
+// = the coverage conversation key).
+export async function fetchChannelThreads(ref: ChannelRef, sinceISO: string, cap = 50): Promise<TeamsMsg[]> {
+  const page = await graphFetch(`/teams/${ref.teamId}/channels/${ref.channelId}/messages?$expand=replies&$top=${Math.min(Math.max(cap, 20), 50)}`);
+  const out: TeamsMsg[] = [];
+  const map = (m: any, replyToId?: string): TeamsMsg | null => {
+    if (m.messageType !== 'message') return null;
+    const text = (m.body?.content ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    return {
+      id: m.id,
+      from: m.from?.user?.displayName ?? m.from?.application?.displayName ?? ref.teamName,
+      fromEmail: m.from?.user?.email ?? m.from?.user?.userPrincipalName ?? undefined,
+      text,
+      createdDateTime: m.createdDateTime,
+      replyToId,
+      teamId: ref.teamId,
+      channelId: ref.channelId,
+    };
+  };
+  for (const root of page.value ?? []) {
+    const r = map(root);
+    if (r) out.push(r);
+    for (const reply of root.replies ?? []) {
+      const rr = map(reply, root.id);
+      if (rr) out.push(rr);
+    }
+  }
+  // Keep only threads with activity after the watermark (root OR any reply).
+  const roots = new Map<string, TeamsMsg[]>();
+  for (const m of out) {
+    const key = m.replyToId ?? m.id;
+    if (!roots.has(key)) roots.set(key, []);
+    roots.get(key)!.push(m);
+  }
+  const fresh: TeamsMsg[] = [];
+  for (const msgs of roots.values()) {
+    if (msgs.some((m) => (m.createdDateTime ?? '') > sinceISO)) fresh.push(...msgs);
+  }
+  return fresh;
+}
 
 // Discover the channels of every team a user belongs to.
 // Needs Team.ReadBasic.All (joinedTeams + channel list). Throws on 403 if missing.

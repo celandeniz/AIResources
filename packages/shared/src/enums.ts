@@ -61,8 +61,17 @@ export type ToolCallStatus = (typeof TOOL_CALL_STATUSES)[number];
 export const USER_ROLES = ['admin', 'manager', 'consultant', 'viewer'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
-export const LLM_PROVIDERS = ['ollama', 'anthropic', 'openai', 'azure_openai', 'gemini'] as const;
+export const LLM_PROVIDERS = ['nvidia', 'ollama', 'anthropic', 'openai', 'azure_openai', 'gemini'] as const;
 export type LlmProvider = (typeof LLM_PROVIDERS)[number];
+
+// NVIDIA NIM (build.nvidia.com free APIs) — the primary provider. One shared
+// tier catalog so resource defs don't hand-type model ids. DeepSeek-R1 is
+// deliberately excluded from defaults (reasoning tokens blow the 2048 cap).
+export const NVIDIA_MODELS = {
+  heavy: 'meta/llama-3.3-70b-instruct', // reasoning/drafting-heavy roles
+  coder: 'qwen/qwen2.5-coder-32b-instruct', // code-centric roles
+  light: 'meta/llama-3.1-8b-instruct', // classification/triage/light drafting
+} as const;
 
 export const INTEGRATION_TYPES = [
   'ado_org',

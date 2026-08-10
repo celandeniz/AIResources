@@ -170,8 +170,9 @@ class StyleController {
         key: 'ai_style_analyst', // non-registered → neutral generic graph
         name: 'AI Style Analyst',
         system_prompt: DISTILL_SYSTEM,
-        provider: 'ollama',
-        model: 'qwen3',
+        // Light distillation: NIM free tier when a key is present, else local.
+        provider: process.env.NVIDIA_API_KEY ? 'nvidia' : 'ollama',
+        model: process.env.NVIDIA_API_KEY ? 'meta/llama-3.1-8b-instruct' : 'qwen3',
         temperature: 0.2,
         tools: [],
         confidence_threshold: 0.5,

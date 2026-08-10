@@ -1,3 +1,4 @@
+import { NVIDIA_MODELS } from './enums';
 import type { ResourceDef, AutomationDef } from './resources';
 import type { ToolName } from './tool-intents';
 
@@ -94,7 +95,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Finance Manager',
     role: 'financial controlling, cash flow, budgeting, FP&A, revenue/margin governance',
     description: 'Owns financial controlling, cash flow, budgeting, FP&A and revenue/margin governance, turning Business Central data into board-ready insight that steers profitable growth.',
-    provider: 'openai', model: 'gpt-4o', temperature: 0.2, approvalLimit: 50000,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.2, approvalLimit: 50000,
     tools: ['rag_search', 'bc_read_balance', 'bc_read_invoices', 'create_document', 'create_task', 'send_email', 'handoff'],
     email: 'finance@dynamicsops.com',
     expertise: [
@@ -115,7 +116,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Accountant',
     role: 'bookkeeping, AR/AP, invoicing, reconciliations, Turkish VAT/e-dönüşüm, close, payroll inputs',
     description: "Runs DynamicsOps' day-to-day books in Business Central — AR/AP, invoicing, reconciliations, Turkish VAT/e-fatura/e-arşiv/e-defter compliance, month-end close, and payroll inputs — flagging cash and compliance risk to keep the firm audit-ready.",
-    provider: 'openai', model: 'gpt-4o', temperature: 0.15, approvalLimit: 25000,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.15, approvalLimit: 25000,
     tools: ['rag_search', 'bc_read_customer', 'bc_read_invoices', 'bc_read_balance', 'bc_create_invoice', 'bc_post_payment', 'create_document', 'create_task', 'handoff'],
     email: 'accounting@dynamicsops.com',
     expertise: [
@@ -136,7 +137,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Marketing Manager',
     role: 'demand generation, campaigns, content calendar, SEO, events, Microsoft co-marketing, brand',
     description: 'Owns demand generation, campaigns, content calendar, SEO, events/webinars, Microsoft co-marketing and brand positioning for the consultancy.',
-    provider: 'ollama', model: 'qwen3', temperature: 0.4,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.4,
     tools: ['rag_search', 'create_document', 'create_task', 'send_email', 'create_calendar_event', 'crm_update_record', 'handoff'],
     email: 'marketing@dynamicsops.com',
     expertise: [
@@ -158,7 +159,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Microsoft Relationship Manager',
     role: 'Microsoft partnership, Solutions Partner designations, co-sell, Marketplace, incentives',
     description: "Owns DynamicsOps' Microsoft partnership economics: maintains Solutions Partner designations/specializations under MAICPP, manages co-sell and Marketplace, claims partner incentives, and closes capability gaps that unlock funding and pipeline.",
-    provider: 'openai', model: 'gpt-4o', temperature: 0.2,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.2,
     tools: ['rag_search', 'create_document', 'create_task', 'send_email', 'crm_update_record', 'handoff'],
     email: 'partner@dynamicsops.com',
     expertise: [
@@ -179,7 +180,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI License Management',
     role: 'M365/D365/Power Platform licensing optimization, capacity, CSP, true-ups, renewals, compliance',
     description: "Governs DynamicsOps's M365, D365, and Power Platform licensing estate — optimizing seats, capacity, CSP/NCE terms, true-ups and renewals to cut cost and keep the firm and clients compliant.",
-    provider: 'ollama', model: 'qwen3', temperature: 0.2,
+    provider: 'nvidia', model: NVIDIA_MODELS.light, temperature: 0.2,
     tools: ['rag_search', 'create_document', 'create_task', 'crm_read_record', 'bc_read_invoices', 'send_email', 'handoff'],
     email: 'licensing@dynamicsops.com',
     expertise: [
@@ -200,7 +201,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Business Development Manager',
     role: 'pipeline growth, lead qualification, partnerships, account expansion, market entry',
     description: 'Drives pipeline growth by qualifying inbound leads, building Microsoft ecosystem partnerships, expanding existing accounts, and orchestrating market-entry plays across the portfolio.',
-    provider: 'anthropic', model: 'claude-opus-4-8', temperature: 0.3, approvalLimit: 50000,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.3, approvalLimit: 50000,
     tools: ['rag_search', 'crm_read_record', 'crm_update_record', 'generate_quote', 'send_proposal', 'create_task', 'handoff'],
     email: 'bizdev@dynamicsops.com',
     expertise: [
@@ -222,7 +223,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI New Software Products Manager',
     role: 'productizing IP into AI/software offerings, roadmap, pricing, go-to-market, launch automation',
     description: 'Productizes delivery IP into repeatable AI/software offerings — AppSource/ISV apps, Power Platform accelerators, vertical solutions — owning roadmap, pricing, packaging and launch to open new recurring-revenue lines.',
-    provider: 'anthropic', model: 'claude-opus-4-8', temperature: 0.35,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.35,
     tools: ['rag_search', 'create_document', 'create_task', 'devops_create_workitem', 'generate_quote', 'send_proposal', 'handoff'],
     email: 'products@dynamicsops.com',
     expertise: [
@@ -245,7 +246,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Human Resources Manager',
     role: 'hiring, onboarding, performance, Microsoft certification/skilling, culture, retention',
     description: 'Owns the talent lifecycle for a Dynamics/Power Platform consulting workforce — hiring billable consultants, onboarding, Microsoft certification development, performance and bench management, culture and retention.',
-    provider: 'ollama', model: 'gemma3', temperature: 0.3,
+    provider: 'nvidia', model: NVIDIA_MODELS.light, temperature: 0.3,
     tools: ['rag_search', 'create_document', 'create_task', 'send_email', 'create_calendar_event', 'handoff'],
     email: 'hr@dynamicsops.com',
     expertise: [
@@ -266,7 +267,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Social Content Manager',
     role: 'LinkedIn/X/blog content, thought leadership, post calendar, engagement, employer brand',
     description: "Owns DynamicsOps' organic social and thought-leadership engine across LinkedIn, X and the blog, turning Dynamics/Power Platform expertise into a steady content calendar, employer-brand storytelling and engagement.",
-    provider: 'ollama', model: 'qwen3', temperature: 0.45,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.45,
     tools: ['rag_search', 'create_document', 'create_task', 'send_email', 'create_calendar_event', 'handoff'],
     email: 'social@dynamicsops.com',
     expertise: [
@@ -288,7 +289,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Resourcing Manager',
     role: 'staffing & allocation, capacity planning, bench management, skills matching, utilization',
     description: 'Owns staffing and capacity for the practice — matches consultants to projects, manages the bench, and optimizes utilization so DynamicsOps can scale delivery and launch new offerings without over- or under-hiring.',
-    provider: 'ollama', model: 'qwen3', temperature: 0.25,
+    provider: 'nvidia', model: NVIDIA_MODELS.light, temperature: 0.25,
     tools: ['rag_search', 'create_document', 'create_task', 'create_calendar_event', 'send_teams_message', 'handoff'],
     email: 'resourcing@dynamicsops.com',
     expertise: [
@@ -309,7 +310,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI F&O Project Manager',
     role: 'D365 F&SCM delivery governance: plans, RAID, milestones/gates, steering, cutover',
     description: 'Runs delivery governance for Dynamics 365 F&SCM implementations: project plans, RAID logs, milestone/gate tracking, steering-pack status, and cross-workstream action follow-up.',
-    provider: 'openai', model: 'gpt-4o', temperature: 0.2,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.2,
     tools: ['rag_search', 'create_document', 'create_task', 'devops_create_workitem', 'opsconnect_update_status', 'send_email', 'handoff'],
     email: 'fo-delivery@dynamicsops.com',
     expertise: [
@@ -330,7 +331,7 @@ export const BUSINESS_DEFS: ResourceDef[] = [
     name: 'AI Business Central Project Manager',
     role: 'D365 Business Central delivery: plans, milestones, RAID, governance, status reporting',
     description: 'Owns delivery of Dynamics 365 Business Central implementations: project plans and milestones, RAID logs, governance cadence, and client-ready status reports.',
-    provider: 'ollama', model: 'qwen3', temperature: 0.2,
+    provider: 'nvidia', model: NVIDIA_MODELS.heavy, temperature: 0.2,
     tools: ['rag_search', 'create_document', 'create_task', 'opsconnect_create_task', 'devops_create_workitem', 'send_email', 'handoff'],
     email: 'bc-delivery@dynamicsops.com',
     expertise: [

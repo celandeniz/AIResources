@@ -93,6 +93,35 @@ export class GitHubAdapter implements ConnectorAdapter {
         };
       }
 
+      if (tool === 'github_create_pr') {
+        const head = String(args.head ?? args.branch ?? '');
+        const base = String(args.base ?? 'main');
+        const title = String(args.title ?? '');
+        if (!head || !title) return { ok: false, detail: 'github_create_pr requires head (branch) and title' };
+        const resp = await ghFetch(`/repos/${args.repo ?? repo}/pulls`, {
+          method: 'POST',
+          // Draft by default — merge stays a human decision.
+          body: JSON.stringify({ title, head, base, body: String(args.body ?? ''), draft: args.draft !== false }),
+        });
+        return {
+          ok: true,
+          external_id: String(resp.number),
+          detail: `Opened PR ${args.repo ?? repo}#${resp.number} (${head} → ${base})`,
+          data: { html_url: resp.html_url, number: resp.number },
+        };
+      }
+
+      if (tool === 'github_dispatch_workflow') {
+        const workflow = String(args.workflow ?? '');
+        const ref = String(args.ref ?? args.branch ?? 'main');
+        if (!workflow) return { ok: false, detail: 'github_dispatch_workflow requires workflow (file name or id)' };
+        await ghFetch(`/repos/${args.repo ?? repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, {
+          method: 'POST',
+          body: JSON.stringify({ ref, inputs: (args.inputs as Record<string, unknown>) ?? {} }),
+        });
+        return { ok: true, detail: `Dispatched ${workflow}@${ref} on ${args.repo ?? repo}` };
+      }
+
       return { ok: false, detail: `GitHubAdapter cannot execute ${tool}` };
     } catch (e) {
       return { ok: false, detail: (e as Error).message };
@@ -101,3 +130,108 @@ export class GitHubAdapter implements ConnectorAdapter {
 }
 
 export const gitHubAdapter = new GitHubAdapter();
+
+// ── Read helpers for repo profiling (WS6 tech-stack-aware docs) ──────────────
+// Best-effort by design: callers treat null/[] as "no repo insight available".
+
+export async function getRepoTree(repo: string, branch?: string, cap = 3000): Promise<{ path: string; size?: number }[]> {
+  if (!githubConfigured()) return [];
+  try {
+    const ref = branch ?? (await ghFetch(`/repos/${repo}`))?.default_branch ?? 'main';
+    const resp = await ghFetch(`/repos/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+    return ((resp?.tree ?? []) as any[])
+      .filter((e) => e.type === 'blob')
+      .slice(0, cap)
+      .map((e) => ({ path: String(e.path), size: typeof e.size === 'number' ? e.size : undefined }));
+  } catch {
+    return [];
+  }
+}
+
+export async function getFileContent(repo: string, filePath: string, maxBytes = 60_000): Promise<string | null> {
+  if (!githubConfigured()) return null;
+  try {
+    const resp = await ghFetch(`/repos/${repo}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}`);
+    if (!resp?.content) return null;
+    const buf = Buffer.from(String(resp.content), 'base64');
+    return buf.subarray(0, maxBytes).toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+export async function getReadme(repo: string, maxChars = 1200): Promise<string | null> {
+  if (!githubConfigured()) return null;
+  try {
+    const resp = await ghFetch(`/repos/${repo}/readme`);
+    if (!resp?.content) return null;
+    return Buffer.from(String(resp.content), 'base64').toString('utf8').slice(0, maxChars);
+  } catch {
+    return null;
+  }
+}
+
+export async function getLanguages(repo: string): Promise<Record<string, number>> {
+  if (!githubConfigured()) return {};
+  try {
+    return (await ghFetch(`/repos/${repo}/languages`)) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+// ── Read helpers for the dev-pod CI loop (not tools; exported functions) ──────
+
+export async function getBranch(repo: string, branch: string): Promise<{ exists: boolean; sha?: string }> {
+  if (!githubConfigured()) return { exists: false };
+  try {
+    const resp = await ghFetch(`/repos/${repo}/branches/${encodeURIComponent(branch)}`);
+    return { exists: true, sha: resp?.commit?.sha };
+  } catch {
+    return { exists: false };
+  }
+}
+
+export async function getLatestWorkflowRun(
+  repo: string,
+  branch: string,
+  workflow?: string,
+): Promise<{ id: number; status: string; conclusion: string | null; html_url: string; name: string } | null> {
+  if (!githubConfigured()) return null;
+  const path = workflow
+    ? `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(branch)}&per_page=1`
+    : `/repos/${repo}/actions/runs?branch=${encodeURIComponent(branch)}&per_page=1`;
+  const resp = await ghFetch(path);
+  const run = resp?.workflow_runs?.[0];
+  return run ? { id: run.id, status: run.status, conclusion: run.conclusion ?? null, html_url: run.html_url, name: run.name } : null;
+}
+
+// Branch-vs-base compare stats for the PR-stage diff-size guard.
+export async function getCompareStats(repo: string, base: string, head: string): Promise<{ files: number; paths: string[] } | null> {
+  if (!githubConfigured()) return null;
+  try {
+    const resp = await ghFetch(`/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=100`);
+    const files = (resp?.files ?? []) as any[];
+    return { files: Number(resp?.total_files ?? files.length), paths: files.map((f) => String(f.filename)) };
+  } catch {
+    return null;
+  }
+}
+
+// Failed-job excerpt for the repair loop: job names + failed step names.
+export async function getWorkflowRunFailureExcerpt(repo: string, runId: number): Promise<string> {
+  if (!githubConfigured()) return '';
+  try {
+    const resp = await ghFetch(`/repos/${repo}/actions/runs/${runId}/jobs?per_page=30`);
+    const lines: string[] = [];
+    for (const job of resp?.jobs ?? []) {
+      if (job.conclusion === 'failure') {
+        const steps = (job.steps ?? []).filter((s: any) => s.conclusion === 'failure').map((s: any) => s.name);
+        lines.push(`Job "${job.name}" failed${steps.length ? ` at step(s): ${steps.join(', ')}` : ''}`);
+      }
+    }
+    return lines.join('\n').slice(0, 2000);
+  } catch {
+    return '';
+  }
+}

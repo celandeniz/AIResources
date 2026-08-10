@@ -1,6 +1,7 @@
 export * from './enums';
 export * from './tool-intents';
 export * from './agent';
+export * from './dates';
 export * from './resources';
 export * from './consulting-resources';
 export * from './business-resources';

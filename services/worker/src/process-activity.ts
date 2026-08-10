@@ -1,5 +1,5 @@
 import { PrismaClient } from '@dynops/db';
-import { TOOL_REGISTRY, isKnownTool, type AgentRunRequest, type ToolName } from '@dynops/shared';
+import { TOOL_REGISTRY, isKnownTool, isSensitive, type AgentRunRequest, type ToolName } from '@dynops/shared';
 import { matchRoutingRule, type RuleRow } from './rules';
 import { runAgent, executeToolCallViaApi } from './agent-client';
 import { planAndStartMission } from './mission';
@@ -131,9 +131,12 @@ export async function processActivity(activityId: string) {
   // ── 0. Passive email watch — if owner is not a direct To recipient, park it ─
   // Support-mailbox mail is exempt: support@ is intentionally a shared inbox the
   // AI owns end-to-end (→ Topic Mission), so it must NOT be parked as "watching".
+  // Coverage-watchdog follow-up activities are also exempt: their `to` is the
+  // CUSTOMER (never the owner) by design — parking them would kill the nudge.
   if (
     process.env.EMAIL_WATCH_ENABLED !== 'false' &&
     activity.channel === 'email' &&
+    !meta0.coverage &&
     !(ENABLE_TOPIC_MISSIONS && isSupportEmail)
   ) {
     const owner = (process.env.WATCH_OWNER_EMAIL ?? 'deniz@dynamicsops.com').toLowerCase();
@@ -241,7 +244,50 @@ export async function processActivity(activityId: string) {
     !meta0.mission_spawned &&
     (activity.channel === 'devops' || isSupportEmail);
   if (missionEligible && resourceId) {
-    const adoId = activity.channel === 'devops' ? String(activity.external_id ?? '').replace(/^ado:/, '') : null;
+    // external_id may be rev-suffixed ('ado:123:r4') under update re-ingestion —
+    // the bare work-item id is the mission identity.
+    const adoId = activity.channel === 'devops'
+      ? String((meta0.ado as any)?.id ?? String(activity.external_id ?? '').replace(/^ado:/, '').split(':')[0])
+      : null;
+
+    // Mission dedupe per ADO work item: an update to a ticket that already has
+    // a live mission becomes follow-up context on that mission, not a second
+    // pod. (A DONE mission + a genuinely new revision → new mission = reopen.)
+    if (adoId) {
+      // Active-mission counts are small — filter the Json pointer in JS rather
+      // than relying on Prisma Json path syntax.
+      const candidates = await (prisma as any).missions.findMany({
+        where: { workspace_id: wsId, status: { in: ['planning', 'running', 'blocked'] } },
+        orderBy: { created_at: 'desc' },
+        take: 50,
+        select: { id: true, summary: true },
+      });
+      const existing = candidates.find((m: any) => (m.summary as any)?.parent?.ado_id === adoId) ?? null;
+      if (existing) {
+        await (prisma as any).agent_messages.create({
+          data: {
+            workspace_id: wsId,
+            mission_id: existing.id,
+            kind: 'status',
+            body: `ADO update${(meta0.ado as any)?.rev != null ? ` r${(meta0.ado as any).rev}` : ''}: ${activity.subject ?? ''}\n${String(activity.body ?? '').slice(0, 2000)}`,
+          },
+        });
+        await prisma.activities.update({
+          where: { id: activityId },
+          data: { status: 'completed', completed_at: new Date(), metadata: { ...meta0, mission_id: existing.id, mission_followup: true } },
+        });
+        await audit({
+          workspaceId: wsId,
+          action: 'route',
+          entityType: 'missions',
+          entityId: existing.id,
+          activityId,
+          summary: `ADO update attached to existing mission (dedupe #${adoId})`,
+        });
+        return;
+      }
+    }
+
     const mission = await (prisma as any).missions.create({
       data: {
         workspace_id: wsId,
@@ -249,6 +295,7 @@ export async function processActivity(activityId: string) {
         goal: activity.body ?? activity.subject ?? '',
         status: 'planning',
         lead_resource_id: resourceId,
+        project_id: activity.project_id ?? null,
         summary: {
           parent: {
             activity_id: activity.id,
@@ -258,6 +305,7 @@ export async function processActivity(activityId: string) {
             from: meta0.from ?? null,
             subject: activity.subject ?? null,
           },
+          ado: (meta0.ado as any) ?? null,
         },
       },
     });
@@ -308,9 +356,13 @@ export async function processActivity(activityId: string) {
     // Tenant scope: the worker uses a raw PrismaClient (no tenant-guard), so we
     // MUST filter by workspace_id here — the same resource key handling activities
     // in different workspaces would otherwise mix memories across tenants.
-    const memFilter: any = { resource_id: resource.id, workspace_id: wsId };
+    // resource_id null = workspace-wide Memory Vault entries (shared by all).
+    const memFilter: any = {
+      workspace_id: wsId,
+      AND: [{ OR: [{ resource_id: resource.id }, { resource_id: null }] }],
+    };
     if (activity.customer_id) {
-      memFilter.OR = [{ customer_id: activity.customer_id }, { customer_id: null }];
+      memFilter.AND.push({ OR: [{ customer_id: activity.customer_id }, { customer_id: null }] });
     }
     const memories = await (prisma as any).resource_memories.findMany({
       where: memFilter,
@@ -395,6 +447,52 @@ export async function processActivity(activityId: string) {
     composedSystemPrompt = composedSystemPrompt +
       '\n\n## YANIT STİLİ (firma sahibinin öğrenilmiş stili — yanıtı bu sesle yaz)\n' + styleProfileText;
   }
+
+  // ── 2d. Always-on workspace rules (ECC-style standards layer) ─────────────
+  // Unlike skills (opt-in per resource), rules apply to EVERY run in scope.
+  try {
+    const rules = await (prisma as any).workspace_rules.findMany({
+      where: { workspace_id: wsId, is_active: true, scope: { in: ['workspace', resource.key] } },
+      orderBy: { sort: 'asc' },
+      take: 20,
+    });
+    if (rules.length) {
+      composedSystemPrompt +=
+        '\n\n## STANDING RULES (always apply — non-negotiable)\n' +
+        rules.map((r: any) => `- ${r.title}: ${String(r.body).slice(0, 500)}`).join('\n');
+    }
+  } catch (_) { /* table may not exist before first push */ }
+
+  // ── 2e. Learned instincts (confidence-scored lessons from human feedback) ─
+  // High-confidence instincts whose trigger keywords match this activity are
+  // injected; their ids are recorded on the run so approval outcomes can feed
+  // confidence back (+applied&approved / −rejected).
+  let appliedInstinctIds: string[] = [];
+  try {
+    const candidates = await (prisma as any).instincts.findMany({
+      where: {
+        workspace_id: wsId, status: 'active', confidence: { gte: 0.6 },
+        OR: [{ resource_id: resource.id }, { resource_id: null }],
+      },
+      orderBy: { confidence: 'desc' },
+      take: 30,
+    });
+    const hay = `${activity.subject ?? ''} ${activity.body ?? ''}`.toLowerCase();
+    const matched = candidates
+      .filter((i: any) => String(i.trigger).toLowerCase().split(/[,;|]+/).some((t: string) => t.trim().length > 2 && hay.includes(t.trim())))
+      .slice(0, 5);
+    if (matched.length) {
+      composedSystemPrompt +=
+        '\n\n## LEARNED INSTINCTS (geçmiş insan geri bildirimlerinden — uygula)\n' +
+        matched.map((i: any) => `- ${i.lesson} (conf ${Number(i.confidence).toFixed(2)})`).join('\n');
+      appliedInstinctIds = matched.map((i: any) => i.id);
+      await (prisma as any).instincts.updateMany({ where: { id: { in: appliedInstinctIds } }, data: { last_applied_at: new Date() } });
+      await prisma.agent_runs.update({
+        where: { id: run.id },
+        data: { input: { ...((run.input as any) ?? {}), instincts: appliedInstinctIds } as any },
+      });
+    }
+  } catch (_) { /* table may not exist before first push */ }
 
   const req: AgentRunRequest = {
     run_id: run.id,
@@ -550,7 +648,9 @@ export async function processActivity(activityId: string) {
   let seq = 0;
   for (const intent of resp.tool_intents ?? []) {
     const def = isKnownTool(intent.tool) ? TOOL_REGISTRY[intent.tool] : undefined;
-    const sensitive = def?.sensitive ?? intent.sensitive ?? false;
+    // All sensitivity checks route through isSensitive() — the single seam
+    // where per-workspace tool policies (tiered autonomy) plug in.
+    const sensitive = def ? isSensitive(intent.tool) : (intent.sensitive ?? false);
     const risk = (def?.risk ?? 'medium') as any;
     const monetary = def?.monetary ?? false;
     const amount = monetary && typeof intent.args?.amount === 'number' ? (intent.args.amount as number) : null;
@@ -584,6 +684,16 @@ export async function processActivity(activityId: string) {
 
     if (requiresApproval) {
       createdApproval = true;
+      // Coverage autosend: watchdog follow-up drafts auto-send if not reviewed
+      // within the SLA timeout (quiet-hours-adjusted; sweeper re-checks the
+      // thread for human replies before executing).
+      const coverageAutosend =
+        MESSAGE_ACTIONS.has(intent.tool) &&
+        Boolean(meta0.coverage_autosend) &&
+        process.env.ENABLE_COVERAGE_AUTOSEND === 'true';
+      const autosendAt = coverageAutosend
+        ? new Date(Date.now() + Number(process.env.COVERAGE_AUTOSEND_TIMEOUT_H ?? 4) * 3_600_000)
+        : null;
       const createdAppr = await prisma.approvals.create({
         data: {
           workspace_id: wsId,
@@ -600,7 +710,13 @@ export async function processActivity(activityId: string) {
           amount: amount ?? undefined,
           reason: resp.needs_escalation ? 'escalation' : confidence < threshold ? 'low_confidence' : 'sensitive_action',
           status: 'pending',
-        },
+          ...(autosendAt
+            ? {
+                auto_execute_at: autosendAt,
+                auto_policy: { source: 'coverage_watchdog', thread_id: meta0.coverage_thread_id ?? null, policy: 'auto_approve_on_timeout' },
+              }
+            : {}),
+        } as any,
       });
 
       // Prepare ≥3 toned alternative replies (owner style) for message actions.
@@ -629,10 +745,12 @@ export async function processActivity(activityId: string) {
       }
       await notify({
         workspaceId: wsId,
-        type: 'approval_created',
-        title: `Approval required: ${intent.tool}`,
-        message: `${resource.name} proposed ${intent.tool} for "${activity.subject ?? 'activity'}".`,
-        metadata: { activityId, agentRunId: run.id, toolCallId: toolCall.id, action: intent.tool },
+        type: autosendAt ? 'autosend_pending' : 'approval_created',
+        title: autosendAt ? `Otomatik gönderim planlandı: ${intent.tool}` : `Approval required: ${intent.tool}`,
+        message: autosendAt
+          ? `${resource.name} taslağı ${autosendAt.toISOString()} itibarıyla otomatik gönderilecek — öncesinde onayla/reddet.`
+          : `${resource.name} proposed ${intent.tool} for "${activity.subject ?? 'activity'}".`,
+        metadata: { activityId, agentRunId: run.id, toolCallId: toolCall.id, action: intent.tool, autoExecuteAt: autosendAt?.toISOString() ?? null },
       });
       await audit({ workspaceId: wsId, action: 'escalate', entityType: 'approvals', activityId, entityId: toolCall.id, summary: `Approval required for ${intent.tool}` });
     } else {

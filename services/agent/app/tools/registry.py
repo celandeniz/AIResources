@@ -1,5 +1,7 @@
 """Tool catalog used to describe available tools in the prompt. Mirrors the
-authoritative registry in packages/shared/tool-intents.ts. The agent only
+authoritative registry in packages/shared/tool-intents.ts — KEEP IN SYNC: a
+tool missing here is silently dropped from every agent prompt by
+tool_catalog_text(), so the resource can never propose it. The agent only
 DESCRIBES intents; Node executes them, so `sensitive` here is advisory."""
 from __future__ import annotations
 
@@ -33,6 +35,18 @@ TOOLS: dict[str, dict] = {
     "generate_quote": {"sensitive": True, "desc": "Produce a priced quote."},
     "send_proposal": {"sensitive": True, "desc": "Deliver a proposal to a customer (always approval)."},
     "handoff": {"sensitive": False, "desc": "Route to another AI Resource."},
+    "post_message": {"sensitive": False, "desc": "Post a status/question to the mission feed (inter-agent messaging)."},
+    "remember": {"sensitive": False, "desc": "Save a durable note to long-term memory (args: scope 'resource'|'workspace')."},
+    "run_report": {"sensitive": False, "desc": "Run a named report from the safe catalog and return rows."},
+    "make_chart": {"sensitive": False, "desc": "Describe a chart (bar/donut/line) for the UI to render."},
+    "send_whatsapp_message": {"sensitive": True, "desc": "Send a WhatsApp message to a customer (always approval)."},
+    "bc_create_sales_order": {"sensitive": True, "desc": "Create a Business Central sales order (always approval)."},
+    "code_task": {"sensitive": True, "desc": "Run an AI coding task via OpenCode; returns a branch + diff for review."},
+    "phone_task": {"sensitive": True, "desc": "Execute an approved step-script on the Android operator (always approval)."},
+    "devops_set_state": {"sensitive": False, "desc": "Advance an ADO work item to a whitelisted state (auto)."},
+    "devops_link_workitem": {"sensitive": False, "desc": "Link two ADO work items or attach a hyperlink (auto)."},
+    "github_create_pr": {"sensitive": True, "desc": "Open a GitHub pull request from an existing branch."},
+    "github_dispatch_workflow": {"sensitive": False, "desc": "Trigger a GitHub Actions workflow on a branch (auto)."},
 }
 
 

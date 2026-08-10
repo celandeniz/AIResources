@@ -7,6 +7,7 @@ import { emitStreamEvent } from '../../common/events';
 import type { AuthUser } from '../../auth/decorators';
 import { PHONE_COMMAND_TTL_MS } from '../devices/phone-task.service';
 import { pushCommandReady } from '../devices/push-command-ready';
+import { InstinctsService } from '../instincts/instincts.module';
 
 const AGENT_URL = process.env.AGENT_URL ?? 'http://localhost:8000';
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN ?? 'dev-internal-token';
@@ -95,6 +96,7 @@ export class ApprovalsService {
     private readonly audit: AuditService,
     private readonly executor: ExecutorService,
     private readonly queue: QueueService,
+    private readonly instincts: InstinctsService,
   ) {}
 
   async list(filters: ApprovalFilters) {
@@ -392,13 +394,33 @@ export class ApprovalsService {
     }
 
     // Optional inline edit of the action payload before executing.
+    const originalDraft = readDraftText(approval.tool_call?.args);
     if (opts.editedPayload && approval.tool_call) {
       await this.prisma.tool_calls.update({ where: { id: approval.tool_call.id }, data: { args: opts.editedPayload } });
     }
 
+    // Continuous learning (ECC instincts): edited approvals distill a lesson;
+    // clean approvals boost the instincts that were applied. Fire-and-forget.
+    const edited = Boolean(opts.editedPayload) && readDraftText(opts.editedPayload) !== originalDraft;
+    void this.instincts.feedback(approval.agent_run_id, edited ? 'edited' : 'approved');
+    if (edited && originalDraft) {
+      const run = approval.agent_run_id
+        ? await this.prisma.agent_runs.findUnique({ where: { id: approval.agent_run_id }, select: { ai_resource_id: true } })
+        : null;
+      void this.instincts.distill({
+        workspaceId: approval.workspace_id,
+        resourceId: run?.ai_resource_id ?? null,
+        original: originalDraft,
+        outcome: 'edited',
+        finalText: readDraftText(opts.editedPayload),
+        context: approval.action,
+      });
+    }
+
     await this.prisma.approvals.update({
       where: { id },
-      data: { status: 'approved', reviewer_id: user.id, decided_at: new Date(), decision_notes: opts.note },
+      // Human decision cancels any pending auto-execute timer.
+      data: { status: 'approved', reviewer_id: user.id, decided_at: new Date(), decision_notes: opts.note, auto_execute_at: null },
     });
     emitStreamEvent({ type: 'approval', workspaceId: approval.workspace_id, payload: { id, status: 'approved' } });
     await this.audit.log({ actorType: 'user', actorUserId: user.id, action: 'approve', entityType: 'approvals', entityId: id, activityId: approval.activity_id, summary: `Approved ${approval.action}` });
@@ -428,10 +450,60 @@ export class ApprovalsService {
     return { approval: await this.get(id), executed };
   }
 
-  async reject(id: string, user: AuthUser, note: string) {
-    const approval = await this.prisma.approvals.findUnique({ where: { id } });
+  // Auto-approve on SLA timeout (coverage watchdog tiered autonomy). Same flow
+  // as approve() minus the human context: no reviewer, no limit check (auto
+  // approvals are never created for monetary actions), system-actor audit.
+  // Guards: still pending AND auto_execute_at still set — any human touch
+  // (approve/reject/edit) clears the timer and wins.
+  async autoApprove(id: string, note: string) {
+    const approval = await this.prisma.approvals.findUnique({ where: { id }, include: { tool_call: true } });
     if (!approval) throw new NotFoundException('approval not found');
-    await this.prisma.approvals.update({ where: { id }, data: { status: 'rejected', reviewer_id: user.id, decided_at: new Date(), decision_notes: note } });
+    if (approval.status !== 'pending' || !(approval as any).auto_execute_at) {
+      return { skipped: true, reason: `not auto-executable (${approval.status})` };
+    }
+    await this.prisma.approvals.update({
+      where: { id },
+      data: { status: 'approved', reviewer_id: null, decided_at: new Date(), decision_notes: note, auto_execute_at: null } as any,
+    });
+    emitStreamEvent({ type: 'approval', workspaceId: approval.workspace_id, payload: { id, status: 'approved', auto: true } });
+    await this.audit.log({ actorType: 'system', action: 'approve', entityType: 'approvals', entityId: id, activityId: approval.activity_id, summary: `Auto-approved on SLA timeout — ${note}` });
+
+    let executed: any = null;
+    if (approval.tool_call_id) {
+      await this.prisma.tool_calls.update({ where: { id: approval.tool_call_id }, data: { status: 'approved' } });
+      executed = await this.executor.executeToolCall(approval.tool_call_id, null as any);
+    }
+    await this.advanceActivity(approval.activity_id);
+    return { approval: await this.get(id), executed, auto: true };
+  }
+
+  // Sweeper helper: cancel the timer without deciding (drop back to manual).
+  async clearAutoExecute(id: string, reason: string) {
+    await this.prisma.approvals.update({ where: { id }, data: { auto_execute_at: null, auto_policy: { cleared: reason, cleared_at: new Date().toISOString() } } as any });
+  }
+
+  async reject(id: string, user: AuthUser, note: string) {
+    const approval = await this.prisma.approvals.findUnique({ where: { id }, include: { tool_call: true } });
+    if (!approval) throw new NotFoundException('approval not found');
+    // Continuous learning: rejection penalizes applied instincts + distills why.
+    void this.instincts.feedback(approval.agent_run_id, 'rejected');
+    {
+      const originalDraft = readDraftText(approval.tool_call?.args);
+      if (originalDraft) {
+        const run = approval.agent_run_id
+          ? await this.prisma.agent_runs.findUnique({ where: { id: approval.agent_run_id }, select: { ai_resource_id: true } })
+          : null;
+        void this.instincts.distill({
+          workspaceId: approval.workspace_id,
+          resourceId: run?.ai_resource_id ?? null,
+          original: originalDraft,
+          outcome: 'rejected',
+          note,
+          context: approval.action,
+        });
+      }
+    }
+    await this.prisma.approvals.update({ where: { id }, data: { status: 'rejected', reviewer_id: user.id, decided_at: new Date(), decision_notes: note, auto_execute_at: null } as any });
     emitStreamEvent({ type: 'approval', workspaceId: approval.workspace_id, payload: { id, status: 'rejected' } });
     if (approval.tool_call_id) {
       await this.prisma.tool_calls.update({ where: { id: approval.tool_call_id }, data: { status: 'rejected' } });

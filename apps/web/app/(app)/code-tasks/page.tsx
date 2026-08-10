@@ -22,6 +22,8 @@ interface CodeTaskRow {
 
 const MODEL_OPTIONS = [
   'ollama/qwen2.5-coder:14b',
+  'nvidia/qwen/qwen2.5-coder-32b-instruct',
+  'nvidia/meta/llama-3.3-70b-instruct',
   'ollama/deepseek-r1:14b',
   'ollama/gpt-oss:20b',
   'anthropic/claude-opus-4-8',

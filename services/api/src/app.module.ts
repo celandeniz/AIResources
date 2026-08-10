@@ -40,6 +40,11 @@ import { MeetingsModule } from './modules/meetings/meetings.controller';
 import { DevicesModule } from './modules/devices/devices.module';
 import { ChatModule } from './modules/chat/chat.controller';
 import { PushDispatcherModule } from './integrations/push/push-dispatcher.service';
+import { ProjectsModule } from './modules/projects/projects.controller';
+import { CoverageModule } from './integrations/coverage/coverage.controller';
+import { InstinctsModule } from './modules/instincts/instincts.module';
+import { GovernanceModule } from './modules/governance/governance.module';
+import { EnvironmentsModule } from './modules/environments/environments.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -82,6 +87,11 @@ import { HealthController } from './health.controller';
     DevicesModule,
     ChatModule,
     PushDispatcherModule,
+    ProjectsModule,
+    CoverageModule,
+    InstinctsModule,
+    GovernanceModule,
+    EnvironmentsModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }],

@@ -109,6 +109,8 @@ class DashboardController {
     const COST: Record<string, number> = { // $ per 1K output tokens (rough)
       'claude-opus-4-8': 0.015, 'claude-sonnet-4-6': 0.003, 'gpt-4o': 0.01, 'gpt-4o-mini': 0.0006,
     };
+    // Free tiers: local Ollama + NVIDIA NIM (build.nvidia.com free APIs).
+    const FREE_PROVIDERS = new Set(['ollama', 'nvidia']);
     const runs = await this.prisma.agent_runs.findMany({
       select: { ai_resource_id: true, llm_provider: true, llm_model: true, prompt_tokens: true, completion_tokens: true },
       take: 5000,
@@ -121,16 +123,16 @@ class DashboardController {
       const key = r.ai_resource_id;
       const out = r.completion_tokens ?? 0;
       const inp = r.prompt_tokens ?? 0;
-      const isLocal = r.llm_provider === 'ollama';
-      const cost = isLocal ? 0 : (out / 1000) * (COST[r.llm_model] ?? 0.005);
+      const isFree = FREE_PROVIDERS.has(r.llm_provider);
+      const cost = isFree ? 0 : (out / 1000) * (COST[r.llm_model] ?? 0.005);
       totalCost += cost; totalTokens += out + inp;
-      byResource[key] ??= { name: nameById[key] ?? key, model: r.llm_model, provider: r.llm_provider, runs: 0, tokens: 0, cost: 0, local: isLocal };
+      byResource[key] ??= { name: nameById[key] ?? key, model: r.llm_model, provider: r.llm_provider, runs: 0, tokens: 0, cost: 0, free: isFree };
       byResource[key].runs++; byResource[key].tokens += out + inp; byResource[key].cost += cost;
     }
     return {
       totalCost: Math.round(totalCost * 100) / 100,
       totalTokens,
-      localShare: runs.length ? Math.round((runs.filter((r) => r.llm_provider === 'ollama').length / runs.length) * 100) : 0,
+      freeShare: runs.length ? Math.round((runs.filter((r) => FREE_PROVIDERS.has(r.llm_provider)).length / runs.length) * 100) : 0,
       byResource: Object.values(byResource).map((r: any) => ({ ...r, cost: Math.round(r.cost * 100) / 100 })),
     };
   }

@@ -44,14 +44,35 @@ export async function getGraphToken(): Promise<string> {
   return cached.token;
 }
 
+// Thrown on sustained Graph throttling — callers (coverage crawler) skip the
+// mailbox for the current tick instead of erroring the integration row.
+export class GraphThrottledError extends Error {
+  constructor(url: string) {
+    super(`Graph throttled (429) at ${url}`);
+    this.name = 'GraphThrottledError';
+  }
+}
+
 // Accepts a path ("/users/...") or a full URL (delta/next links from Graph).
+// On 429 the Retry-After header is honored once (bounded); a repeat 429 throws
+// GraphThrottledError.
 export async function graphFetch(pathOrUrl: string, init: RequestInit = {}): Promise<any> {
   const token = await getGraphToken();
   const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${GRAPH_BASE}${pathOrUrl}`;
-  const res = await fetch(url, {
-    ...init,
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(init.headers || {}) },
-  });
+  let res: Response | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    res = await fetch(url, {
+      ...init,
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...(init.headers || {}) },
+    });
+    if (res.status !== 429) break;
+    if (attempt === 0) {
+      const retryAfter = Number(res.headers.get('retry-after') ?? 5);
+      await new Promise((r) => setTimeout(r, Math.min(Number.isFinite(retryAfter) ? retryAfter : 5, 30) * 1000));
+    }
+  }
+  if (!res) throw new Error('graphFetch: no response');
+  if (res.status === 429) throw new GraphThrottledError(url.replace(GRAPH_BASE, ''));
   if (res.status === 202 || res.status === 204) return { ok: true, status: res.status };
   const text = await res.text();
   let json: any = null;
@@ -65,4 +86,21 @@ export async function graphFetch(pathOrUrl: string, init: RequestInit = {}): Pro
     throw new Error(`Graph ${res.status} ${url.replace(GRAPH_BASE, '')}: ${msg}`);
   }
   return json;
+}
+
+// Generalized @odata.nextLink pager: collects `value` entries up to `cap`.
+export async function pagedGraphFetch(pathOrUrl: string, opts?: { cap?: number; maxPages?: number }): Promise<any[]> {
+  const cap = opts?.cap ?? 200;
+  const maxPages = opts?.maxPages ?? 20;
+  const out: any[] = [];
+  let url: string | undefined = pathOrUrl;
+  for (let page = 0; page < maxPages && url && out.length < cap; page++) {
+    const data: any = await graphFetch(url);
+    for (const v of data.value ?? []) {
+      out.push(v);
+      if (out.length >= cap) break;
+    }
+    url = data['@odata.nextLink'];
+  }
+  return out;
 }

@@ -115,9 +115,12 @@ class BacktestController {
     if (raw.length === 0) throw new BadRequestException('No items to simulate. ' + notes.join(' '));
 
     // model: 'auto' → each resource uses its own configured model (variety);
-    // explicit model → override all; omitted → fast local model for large runs.
+    // explicit model → override all; omitted → fast free model for large runs
+    // (NIM light model when a key is set, else local gemma3). Overrides accept
+    // a provider prefix ('nvidia/…'); bare names run on Ollama.
+    const FAST = process.env.NVIDIA_API_KEY ? 'nvidia/meta/llama-3.1-8b-instruct' : 'gemma3';
     const modelOverride =
-      body.model === 'auto' ? undefined : (body.model ?? (raw.length >= 60 ? 'gemma3' : undefined));
+      body.model === 'auto' ? undefined : (body.model ?? (raw.length >= 60 ? FAST : undefined));
 
     const bt = await this.prisma.backtests.create({
       data: {

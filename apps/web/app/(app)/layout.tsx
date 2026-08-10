@@ -8,7 +8,7 @@ import {
   Plug, Sun, Moon, Bell, Search, ChevronsLeft, LogOut, ChevronDown,
   Building2, UsersRound, ShieldCheck, History, FileText, Repeat, Target, Gauge,
   BarChart3, Sparkles, FileBarChart, ClipboardCheck, PenLine, Code2,
-  CalendarClock, MailCheck,
+  CalendarClock, MailCheck, FolderKanban, Radar, Brain, Scale, ShieldAlert,
 } from 'lucide-react';
 import { getToken, getUser, logout, api } from '../../lib/api';
 import { CommandPalette } from '../../components/command-palette';
@@ -21,6 +21,8 @@ const SECTIONS = [
   { heading: 'Operate', items: [
     { href: '/inbox', label: 'Activity Inbox', icon: Inbox },
     { href: '/approvals', label: 'Approvals', icon: CheckSquare },
+    { href: '/projects', label: 'Projeler', icon: FolderKanban },
+    { href: '/coverage', label: 'Coverage', icon: Radar },
     { href: '/meetings', label: 'Toplantılar', icon: CalendarClock },
     { href: '/missions', label: 'Mission Pods', icon: Target },
   ]},
@@ -45,6 +47,10 @@ const SECTIONS = [
   { heading: 'Admin', items: [
     { href: '/settings/style', label: 'Reply Style', icon: PenLine },
     { href: '/settings/reply-routing', label: 'Yanıt Kurulumu', icon: MailCheck },
+    { href: '/settings/environments', label: 'Müşteri Ortamları', icon: Plug },
+    { href: '/settings/instincts', label: 'Instincts', icon: Brain },
+    { href: '/settings/rules', label: 'Rules & Guards', icon: Scale },
+    { href: '/security-audit', label: 'Security Audit', icon: ShieldAlert },
     { href: '/settings/integrations', label: 'Integrations', icon: Plug },
     { href: '/settings/workspace', label: 'Workspace', icon: Building2 },
     { href: '/settings/members', label: 'Members', icon: UsersRound },
