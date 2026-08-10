@@ -1,5 +1,5 @@
 import { PrismaClient } from '@dynops/db';
-import { TOOL_REGISTRY, isKnownTool, type AgentRunRequest } from '@dynops/shared';
+import { LLM_PROVIDERS, TOOL_REGISTRY, isKnownTool, type AgentRunRequest } from '@dynops/shared';
 import { matchRoutingRule, type RuleRow } from './rules';
 import { runAgent } from './agent-client';
 
@@ -37,8 +37,21 @@ export async function runBacktest(backtestId: string) {
       if (!resource) { resource = await prisma.ai_resources.findUnique({ where: { id: rule.target_resource_id } }); resourceCache.set(rule.target_resource_id, resource); }
       if (!resource) { acc.none++; return; }
       const threshold = Number(resource.confidence_threshold);
-      const provider = modelOverride ? 'ollama' : resource.llm_provider;
-      const model = modelOverride ?? resource.llm_model;
+      // Overrides accept a provider prefix ('nvidia/meta/llama-3.1-8b-instruct');
+      // bare model names ('gemma3') stay on Ollama for back-compat.
+      let provider = resource.llm_provider as string;
+      let model = resource.llm_model;
+      if (modelOverride) {
+        const slash = modelOverride.indexOf('/');
+        const maybe = slash > 0 ? modelOverride.slice(0, slash) : '';
+        if ((LLM_PROVIDERS as readonly string[]).includes(maybe)) {
+          provider = maybe;
+          model = modelOverride.slice(slash + 1);
+        } else {
+          provider = 'ollama';
+          model = modelOverride;
+        }
+      }
 
       const req: AgentRunRequest = {
         run_id: `bt-${item.id}`,

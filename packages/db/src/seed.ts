@@ -69,6 +69,9 @@ async function main() {
       ...existingConfig,
       category: def.category ?? 'operational',
       skill: def.skill ?? def.key,
+      // One-time NIM backfill stamp (see below): once a row carries it, later
+      // re-seeds never touch provider/model again.
+      model_backfill: 'nim-v1',
       ...(reviewerKey ? { reviewer_key: reviewerKey } : {}),
     };
     // 2c: ensure `remember` is in every resource's allowed_tools (deduped)
@@ -113,6 +116,16 @@ async function main() {
     // Backfill a default mailbox for resources created before the email column
     // existed (only when still null — never clobber an admin-set address).
     await prisma.ai_resources.updateMany({ where: { key: def.key, email: null }, data: { email: defaultEmail(def) } });
+    // One-time NIM backfill: rows created before the NVIDIA defaults get moved
+    // to the free NIM models exactly once. The nim-v1 stamp (written into
+    // config by the upsert above) means an admin's later Directory choice is
+    // never clobbered by subsequent re-seeds. Bump to nim-v2 for a re-roll.
+    if (existing && (existingConfig as Record<string, unknown>).model_backfill !== 'nim-v1') {
+      await prisma.ai_resources.update({
+        where: { key: def.key },
+        data: { llm_provider: def.provider, llm_model: def.model },
+      });
+    }
   }
 
   // ── Proactive automations (recurring department jobs) ────────────────────
@@ -479,6 +492,21 @@ async function main() {
     }
   }
 
+  // ── Default guard hooks (ECC): deterministic pre-execution checks ─────────
+  // warn-level body-length guard on all message tools + a block-level
+  // blocked-domain hook (empty list = inert until an admin fills it in).
+  try {
+    const hookCount = await (prisma as any).guard_hooks.count();
+    if (hookCount === 0) {
+      await (prisma as any).guard_hooks.createMany({
+        data: [
+          { tool_pattern: 'send_*', check: 'max_body_length', config: { max: 8000 }, action: 'warn' },
+          { tool_pattern: 'send_*', check: 'blocked_recipient_domains', config: { domains: [] }, action: 'block' },
+        ],
+      });
+    }
+  } catch { /* table appears after first push */ }
+
   // ── Backfill workspace_id on all tenant rows (idempotent) ───────────────
   const TENANT_TABLES = [
     'ai_resources', 'activity_sources', 'activities', 'customers', 'projects',
@@ -486,7 +514,7 @@ async function main() {
     'tasks', 'messages', 'documents', 'knowledge_chunks', 'integrations', 'audit_logs',
     'prompt_versions', 'notifications', 'templates', 'digest_results', 'automations',
     'resource_memories', 'skills', 'reports', 'status_reports', 'style_profiles', 'style_examples',
-    'code_tasks', 'reply_settings',
+    'code_tasks', 'reply_settings', 'coverage_threads', 'instincts', 'workspace_rules', 'guard_hooks',
   ];
   // audit_logs is append-only (trigger blocks UPDATE) — drop it for the backfill;
   // the API recreates the trigger on boot (which starts after this seed).

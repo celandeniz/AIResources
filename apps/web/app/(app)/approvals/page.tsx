@@ -225,6 +225,9 @@ export default function ApprovalsPage() {
                   {ap.agent_run?.ai_resource?.name && <Badge variant="neutral">{ap.agent_run.ai_resource.name}</Badge>}
                   {ap.agent_run?.llm_model && <Badge variant="outline">{ap.agent_run.llm_model}</Badge>}
                   {ap.system_generated && <Badge variant="warning">system</Badge>}
+                  {ap.auto_execute_at && ap.status === 'pending' && (
+                    <Badge variant="warning">⏱ oto-gönderim: {new Date(ap.auto_execute_at).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })}</Badge>
+                  )}
                   {ap.amount && <Badge variant="outline">${Number(ap.amount).toLocaleString()}</Badge>}
                   <div className="ml-auto flex gap-2">
                     <Button size="sm" variant="outline" onClick={() => decide(ap.id, 'reject')} disabled={busy === ap.id}><X className="size-4" />Reject</Button>

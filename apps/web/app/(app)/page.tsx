@@ -52,7 +52,7 @@ export default function DashboardPage() {
           <KpiCard label="Activities handled" value={s?.activitiesHandled ?? 0} accent="primary" spark={[3,5,4,7,8,11,s?.activitiesHandled ?? 12]} sub="resolved by AI" />
           <KpiCard label="Pending approvals" value={s?.pendingApprovals ?? 0} accent="warning" sub="awaiting a human" />
           <KpiCard label="Avg confidence" value={s?.avgConfidence != null ? `${Math.round(s.avgConfidence*100)}` : '—'} accent="success" sub="across agent runs" />
-          <KpiCard label="Est. spend" value={usage ? `$${usage.totalCost}` : '—'} accent="primary" sub={usage ? `${usage.localShare}% on free local models` : 'LLM cost'} />
+          <KpiCard label="Est. spend" value={usage ? `$${usage.totalCost}` : '—'} accent="primary" sub={usage ? `${usage.freeShare}% on free models` : 'LLM cost'} />
         </div>
       )}
 
@@ -70,10 +70,10 @@ export default function DashboardPage() {
                   return (
                     <tr key={p.aiResourceId} className="border-t border-border transition-colors hover:bg-muted/30">
                       <td className="px-4 py-2.5 font-medium">{p.name}</td>
-                      <td className="px-4 py-2.5">{u ? <Badge variant={u.local ? 'success' : 'default'}><Cpu className="size-3" />{u.model}</Badge> : '—'}</td>
+                      <td className="px-4 py-2.5">{u ? <Badge variant={u.free ? 'success' : 'default'}><Cpu className="size-3" />{u.model}</Badge> : '—'}</td>
                       <td className="px-4 py-2.5 text-right font-mono tnum">{p.handled}</td>
                       <td className="px-4 py-2.5 text-right font-mono tnum">{p.avgConfidence != null ? p.avgConfidence.toFixed(2) : '—'}</td>
-                      <td className="px-4 py-2.5 text-right font-mono tnum text-muted-foreground">{u ? (u.local ? 'free' : `$${u.cost}`) : '—'}</td>
+                      <td className="px-4 py-2.5 text-right font-mono tnum text-muted-foreground">{u ? (u.free ? 'free' : `$${u.cost}`) : '—'}</td>
                     </tr>
                   );
                 })}

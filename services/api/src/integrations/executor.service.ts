@@ -15,6 +15,7 @@ import { TOOL_REGISTRY, isKnownTool, IntegrationKind, ToolName } from '@dynops/s
 import { tenantStore } from '../common/tenant';
 import type { ConnectorAdapter, ConnectionInfo } from './contracts';
 import { runReport } from '../modules/analyst/reports.service';
+import { runGuardHooks } from './guard-hooks';
 
 const graphEmail = new GraphEmailAdapter();
 const graphTeams = new GraphTeamsAdapter();
@@ -114,6 +115,24 @@ export class ExecutorService {
       args.to = meta.conversation_id ?? meta.wa_from ?? (typeof meta.from === 'string' ? (meta.from.match(/\d{6,}/)?.[0]) : undefined);
     }
 
+    // Guard hooks (deterministic policy enforcement outside the model):
+    // block → fail the tool_call with the reason; warn → proceed + audit.
+    const guard = await runGuardHooks(this.prisma, wsId ?? null, tool, args);
+    if (!guard.allowed) {
+      await this.prisma.tool_calls.update({ where: { id: toolCallId }, data: { status: 'failed', error: guard.reason } });
+      await this.audit.log({
+        actorType: 'system', action: 'reject', entityType: 'tool_calls', entityId: toolCallId, activityId,
+        summary: `Guard hook blocked ${tool}: ${guard.reason}`,
+      });
+      return { status: 'failed', result: { error: guard.reason, guard_blocked: true } };
+    }
+    for (const w of guard.warnings) {
+      await this.audit.log({
+        actorType: 'system', action: 'execute', entityType: 'tool_calls', entityId: toolCallId, activityId,
+        summary: `Guard warning on ${tool}: ${w}`,
+      });
+    }
+
     await this.prisma.tool_calls.update({ where: { id: toolCallId }, data: { status: 'executing' } });
 
     try {
@@ -123,7 +142,8 @@ export class ExecutorService {
       let result: any;
       if (kind === 'internal') {
         result = await this.executeInternal(tool, args, { activityId, workspaceId: wsId ?? null, sourceResourceId: (tc.agent_run as any)?.ai_resource_id ?? null });
-        // code_task: persist the OpenCode result back onto the code_tasks row.
+        // code_task: persist the OpenCode result back onto the code_tasks row,
+        // and surface it in the mission war-room feed when pod-driven.
         if (tool === 'code_task' && args.code_task_id) {
           try {
             const ct = (result?.result ?? {}) as any;
@@ -135,6 +155,18 @@ export class ExecutorService {
                 share_url: ct.shareUrl ?? null,
               },
             });
+            if (args.mission_id) {
+              await (this.prisma as any).agent_messages.create({
+                data: {
+                  workspace_id: wsId ?? undefined,
+                  mission_id: args.mission_id,
+                  from_resource_id: (tc.agent_run as any)?.ai_resource_id ?? null,
+                  kind: 'status',
+                  body: `code_task ${ct.ok ? (ct.mock ? 'OK (mock)' : 'OK') : 'FAILED'} — ${(ct.summary ?? ct.detail ?? '').slice(0, 1500)}${ct.shareUrl ? `\n${ct.shareUrl}` : ''}`,
+                  metadata: { code_task_id: args.code_task_id, diff_bytes: (ct.diff ?? '').length },
+                },
+              });
+            }
           } catch { /* non-critical */ }
         }
       } else if (!conn) {
@@ -278,6 +310,7 @@ export class ExecutorService {
         model: args.model,
         agent: args.agent,
         repo: args.repo,
+        branch: args.branch,
       });
       return { ok: r.ok, detail: r.detail ?? r.summary?.slice(0, 200), result: r };
     }
@@ -307,7 +340,9 @@ export class ExecutorService {
       await (this.prisma as any).resource_memories.create({
         data: {
           workspace_id: workspaceId ?? undefined,
-          resource_id: sourceResourceId ?? undefined,
+          // scope 'workspace' → Memory Vault entry (resource_id null, shared by
+          // every resource); anything else stays private to the source resource.
+          resource_id: (args.scope as string) === 'workspace' ? null : sourceResourceId ?? undefined,
           customer_id: customerId ?? undefined,
           scope: (args.scope as string) ?? 'general',
           content,

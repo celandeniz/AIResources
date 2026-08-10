@@ -14,6 +14,13 @@ import { Input } from '../../../components/ui/input';
 import { Cpu, ShieldCheck, Mail } from 'lucide-react';
 
 const PROVIDERS: Record<string, string[]> = {
+  nvidia: [
+    'meta/llama-3.3-70b-instruct',
+    'qwen/qwen2.5-coder-32b-instruct',
+    'meta/llama-3.1-8b-instruct',
+    'meta/llama-3.1-70b-instruct',
+    'mistralai/mistral-small-24b-instruct',
+  ],
   ollama: ['qwen3', 'qwen2.5-coder:14b', 'deepseek-r1', 'gemma3', 'gpt-oss:20b', 'mistral-small'],
   anthropic: ['claude-opus-4-8', 'claude-sonnet-4-6'],
   openai: ['gpt-4o', 'gpt-4o-mini'],
@@ -68,10 +75,12 @@ function ResourceGroup({ title, count, items, onSaved }: { title: string; count:
 }
 
 function ResourceCard({ r, onSaved }: { r: any; onSaved: () => void }) {
-  const PROVIDER_LABEL: Record<string, string> = { anthropic: 'Claude', openai: 'ChatGPT', azure_openai: 'Azure', gemini: 'Gemini' };
+  const PROVIDER_LABEL: Record<string, string> = { nvidia: 'NVIDIA NIM', anthropic: 'Claude', openai: 'ChatGPT', azure_openai: 'Azure', gemini: 'Gemini' };
   const tierBadge = r.llm_provider === 'ollama'
     ? <Badge variant="success">free · local</Badge>
-    : <Badge variant="default">{PROVIDER_LABEL[r.llm_provider] ?? r.llm_provider}</Badge>;
+    : r.llm_provider === 'nvidia'
+      ? <Badge variant="success">free · cloud</Badge>
+      : <Badge variant="default">{PROVIDER_LABEL[r.llm_provider] ?? r.llm_provider}</Badge>;
   const category = resourceCategory(r);
   const skill = resourceSkill(r);
   return (
@@ -163,6 +172,7 @@ function ResourceEditor({ r, onSaved }: { r: any; onSaved: () => void }) {
           <div>
             <label className="mb-1.5 block text-xs text-muted-foreground">Provider</label>
             <Select value={provider} onChange={(e) => { setProvider(e.target.value); setModel(PROVIDERS[e.target.value]?.[0] ?? model); }}>
+              <option value="nvidia">NVIDIA NIM (free/cloud)</option>
               <option value="ollama">Ollama (free/local)</option>
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="openai">OpenAI (ChatGPT)</option>

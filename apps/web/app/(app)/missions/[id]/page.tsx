@@ -2,11 +2,13 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { api } from '../../../../lib/api';
+import { toast } from '../../../../components/ui/toaster';
 import { PageHeader, SectionTitle } from '../../../../components/domain';
 import { Card } from '../../../../components/ui/card';
 import { Badge } from '../../../../components/ui/badge';
+import { Button } from '../../../../components/ui/button';
 import { Skeleton } from '../../../../components/ui/skeleton';
-import { MessageSquare, GitBranch } from 'lucide-react';
+import { MessageSquare, GitBranch, CheckCircle2, XCircle, Trash2, ExternalLink } from 'lucide-react';
 
 const STATUS_VARIANT: Record<string, any> = { planning: 'warning', running: 'default', blocked: 'danger', done: 'success', failed: 'danger' };
 const COLS: { key: string; label: string }[] = [
@@ -37,17 +39,69 @@ export default function MissionDetailPage() {
   const pct = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0;
   const colTasks = (k: string) => (k === 'open' ? tasks.filter((t) => t.status === 'open' || t.status === 'failed') : tasks.filter((t) => t.status === k));
 
+  const summary = (m.summary as any) ?? {};
+  const planPending = Boolean(summary.plan_pending);
+
+  async function planAction(action: 'approve-plan' | 'reject-plan') {
+    try {
+      await api(`/missions/${id}/${action}`, { method: 'POST', body: JSON.stringify({}) });
+      toast.success(action === 'approve-plan' ? 'Plan onaylandı — pod çalışıyor' : 'Plan reddedildi');
+      await load();
+    } catch (e: any) { toast.error(e.message); }
+  }
+
+  async function removeTask(taskId: string) {
+    try {
+      await api(`/missions/${id}/tasks/${taskId}`, { method: 'POST', body: JSON.stringify({ remove: true }) });
+      await load();
+    } catch (e: any) { toast.error(e.message); }
+  }
+
   return (
     <div>
       <PageHeader title={m.title} subtitle={m.goal} />
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <Badge variant={STATUS_VARIANT[m.status] ?? 'neutral'}>{m.status}</Badge>
+        {summary.template && <Badge variant="outline">pod: {summary.template}</Badge>}
+        {summary.dev?.branch && <Badge variant="outline"><GitBranch className="size-3" />{summary.dev.branch}</Badge>}
+        {summary.dev?.pr_url && (
+          <a href={summary.dev.pr_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
+            PR <ExternalLink className="size-3" />
+          </a>
+        )}
         {m.lead_resource && <span className="text-sm text-muted-foreground">Lead: <span className="font-medium text-foreground">{m.lead_resource.name}</span></span>}
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <div className="h-2 w-40 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} /></div>
           <span className="font-mono tnum">{doneCount}/{tasks.length} · {pct}%</span>
         </div>
       </div>
+
+      {planPending && (
+        <Card className="mb-5 border-amber-500/40 bg-amber-500/5 p-5">
+          <SectionTitle right={
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => planAction('approve-plan')}><CheckCircle2 className="size-4" /> Planı Onayla</Button>
+              <Button size="sm" variant="outline" onClick={() => planAction('reject-plan')}><XCircle className="size-4" /> Reddet</Button>
+            </div>
+          }>Plan Canvas — insan onayı bekliyor</SectionTitle>
+          <ol className="space-y-2">
+            {tasks.map((t, i) => (
+              <li key={t.id} className="flex items-center gap-3 rounded-lg border border-border bg-background p-2.5">
+                <span className="grid size-6 shrink-0 place-items-center rounded-full bg-muted text-xs font-medium">{i + 1}</span>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-medium">{t.title}</span>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                    {(t.metadata as any)?.kind && (t.metadata as any).kind !== 'agent' && <Badge variant="default">{(t.metadata as any).kind}</Badge>}
+                    {t.assignee_resource && <Badge variant="outline">{t.assignee_resource.name}</Badge>}
+                    {((t.depends_on as string[]) ?? []).length > 0 && <span className="text-xs text-muted-foreground">← {((t.depends_on as string[]) ?? []).length} bağımlılık</span>}
+                  </div>
+                </div>
+                <Button variant="ghost" size="sm" title="Aşamayı kaldır" onClick={() => removeTask(t.id)}><Trash2 className="size-3.5" /></Button>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-[2fr_1fr]">
         {/* Task board */}

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 
 export type StreamEvent = {
-  type: 'activity' | 'approval' | 'notification';
+  type: 'activity' | 'approval' | 'notification' | 'project' | 'coverage';
   workspaceId?: string | null;
   payload: unknown;
 };

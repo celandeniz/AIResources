@@ -41,7 +41,14 @@ def extract_json(text: str) -> dict[str, Any]:
 def get_provider(provider: str, model: str) -> LLMProvider:
     from .stub_provider import StubProvider
 
-    # Free/open-weight local models via Ollama — the default for most resources.
+    # NVIDIA NIM (build.nvidia.com free APIs) — the primary provider for most
+    # resources. No key → deterministic stub (set NVIDIA_API_KEY, or switch the
+    # resource back to Ollama in the Directory for keyless local inference).
+    if provider == "nvidia" and os.getenv("NVIDIA_API_KEY"):
+        from .nvidia_provider import NvidiaProvider
+
+        return NvidiaProvider(model)
+    # Free/open-weight local models via Ollama — the automatic local fallback.
     if provider == "ollama":
         from .ollama_provider import OllamaProvider
 

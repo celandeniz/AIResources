@@ -19,3 +19,12 @@ services/api/prisma/migrations/dev.db*
 
 # local-only
 docker-compose.override.yml
+
+# Flutter build output is symlinked out of the iCloud-synced tree (see
+# apps/mobile/build -> /tmp/...) to stop iCloud from stalling the build.
+apps/mobile/build
+
+# iCloud Drive conflict copies ("Generated 2.xcconfig", "build 2/", ...)
+* 2
+* 2/
+* 2.*

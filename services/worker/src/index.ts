@@ -5,6 +5,7 @@ import { runWeeklyDigest } from './weekly-digest';
 import { runDailyBrief } from './daily-brief';
 import { runProactive, tickProactiveScheduler } from './proactive';
 import { planAndStartMission, advanceMissionFromActivity } from './mission';
+import { pollCiRun, redispatchCi, CI_POLL_QUEUE } from './mission-stages';
 import { runStyleRelearn } from './style-relearn';
 
 const ACTIVITY_QUEUE = 'activity.process';
@@ -48,6 +49,17 @@ const missionAdvanceWorker = new Worker(
   { connection, concurrency: 2 },
 );
 
+// Dev-pod CI polling — delayed jobs re-checking GitHub Actions runs; repair
+// loop re-enqueues itself. Cheap HTTP checks → low concurrency is fine.
+const ciPollWorker = new Worker(
+  CI_POLL_QUEUE,
+  async (job) => {
+    if ((job.data as any)?.redispatch) await redispatchCi(job.data);
+    else await pollCiRun(job.data as any);
+  },
+  { connection, concurrency: 2 },
+);
+
 // Backtest runs are long (many sequential LLM calls) → low concurrency.
 const backtestWorker = new Worker(
   BACKTEST_QUEUE,
@@ -71,7 +83,7 @@ const proactiveWorker = new Worker(
 
 const proactiveQueue = new Queue(PROACTIVE_QUEUE, { connection: { url } as any });
 
-for (const w of [worker, backtestWorker, proactiveWorker, missionWorker, missionAdvanceWorker]) {
+for (const w of [worker, backtestWorker, proactiveWorker, missionWorker, missionAdvanceWorker, ciPollWorker]) {
   w.on('failed', (job, err) => console.error(`[worker] job ${job?.id} failed:`, err.message));
   w.on('completed', (job) => console.log(`[worker] job ${job.id} completed`));
 }

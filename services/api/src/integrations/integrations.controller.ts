@@ -10,6 +10,7 @@ import { graphConfigured } from './graph/graph-client';
 import { Roles } from '../auth/decorators';
 import { IntegrationKind } from '@dynops/shared';
 import { CosmosTimelogService } from './cosmos/timelog.service';
+import { GitHubInternalController } from './github/github-internal.controller';
 
 const TYPE_TO_KIND: Record<string, IntegrationKind> = {
   graph_email: 'email',
@@ -67,7 +68,7 @@ class IntegrationsController {
 
 @Module({
   imports: [AuditModule],
-  controllers: [IntegrationsController],
+  controllers: [IntegrationsController, GitHubInternalController],
   providers: [ExecutorService, CosmosTimelogService],
   exports: [ExecutorService],
 })

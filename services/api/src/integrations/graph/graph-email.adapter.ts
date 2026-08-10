@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { IntegrationKind, ToolName } from '@dynops/shared';
 import type { ConnectorAdapter, ConnectionInfo, ExecResult } from '../contracts';
-import { graphFetch, getGraphToken } from './graph-client';
+import { graphFetch, getGraphToken, pagedGraphFetch } from './graph-client';
 
 // Real Outlook connector via Microsoft Graph (app-only).
 // - execute(send_email) → POST /users/{mailbox}/sendMail   (needs Mail.Send)
@@ -140,10 +140,12 @@ export class GraphEmailAdapter implements ConnectorAdapter {
   async fetchSentItems(conn: ConnectionInfo, mailbox: string, sinceISO: string, cap = 50): Promise<GraphSentMail[]> {
     const targetMailbox = mailbox || this.mailbox(conn);
     const filter = encodeURIComponent(`sentDateTime ge ${sinceISO}`);
+    // conversationId + from are REQUIRED for coverage: without them outbound
+    // mail cannot be matched back to its conversation.
     let url: string | undefined =
       `/users/${encodeURIComponent(targetMailbox)}/mailFolders/sentitems/messages` +
       `?$filter=${filter}&$orderby=sentDateTime%20desc&$top=50` +
-      `&$select=subject,bodyPreview,body,toRecipients,sentDateTime,internetMessageId`;
+      `&$select=subject,bodyPreview,body,toRecipients,sentDateTime,internetMessageId,conversationId,from`;
     const out: GraphSentMail[] = [];
     for (let guard = 0; guard < 20 && url && out.length < cap; guard++) {
       const page = await graphFetch(url);
@@ -156,12 +158,40 @@ export class GraphEmailAdapter implements ConnectorAdapter {
           body: m.body?.content,
           toRecipients: (m.toRecipients ?? []).map((r: any) => r.emailAddress?.address).filter(Boolean),
           sentDateTime: m.sentDateTime,
+          conversationId: m.conversationId,
+          from: m.from?.emailAddress?.address,
         });
         if (out.length >= cap) break;
       }
       url = page['@odata.nextLink'];
     }
     return out;
+  }
+
+  // Coverage read path: paged inbox crawl since a coverage watermark, with the
+  // conversation-complete field set (conversationId, participants). Separate
+  // from pollNewMessages so the poller's mail_since contract stays untouched.
+  async fetchInboxSince(conn: ConnectionInfo, mailbox: string, sinceISO: string, cap = 200): Promise<GraphMail[]> {
+    const targetMailbox = mailbox || this.mailbox(conn);
+    const filter = encodeURIComponent(`receivedDateTime gt ${sinceISO}`);
+    const raw = await pagedGraphFetch(
+      `/users/${encodeURIComponent(targetMailbox)}/mailFolders/inbox/messages` +
+        `?$filter=${filter}&$orderby=receivedDateTime%20asc&$top=50` +
+        `&$select=subject,bodyPreview,from,toRecipients,ccRecipients,receivedDateTime,internetMessageId,conversationId,internetMessageHeaders`,
+      { cap },
+    );
+    return raw.map((m: any) => ({
+      id: m.id,
+      internetMessageId: m.internetMessageId,
+      subject: m.subject,
+      bodyPreview: m.bodyPreview,
+      from: m.from?.emailAddress?.address,
+      receivedDateTime: m.receivedDateTime,
+      to: (m.toRecipients ?? []).map((r: any) => r.emailAddress?.address).filter(Boolean),
+      cc: (m.ccRecipients ?? []).map((r: any) => r.emailAddress?.address).filter(Boolean),
+      conversationId: m.conversationId,
+      headers: mapHeaders(m.internetMessageHeaders),
+    }));
   }
 }
 
@@ -180,6 +210,15 @@ export function customerRecipients(recipients: string[] = []): string[] {
     const domain = r.split('@')[1]?.toLowerCase();
     return domain && domain !== 'dynamicsops.com';
   });
+}
+
+// Pure: true when every participant is on the team domain (internal thread —
+// excluded from customer coverage tracking).
+export function isInternalOnly(participants: (string | undefined | null)[], teamDomain: string): boolean {
+  const list = participants.filter((p): p is string => Boolean(p && p.includes('@')));
+  if (!list.length) return false;
+  const td = teamDomain.toLowerCase();
+  return list.every((p) => p.split('@')[1]?.toLowerCase() === td);
 }
 
 // Graph internetMessageHeaders → lowercased {name: value}, keeping only the
@@ -219,4 +258,6 @@ export interface GraphSentMail {
   body?: string;
   toRecipients: string[];
   sentDateTime?: string;
+  conversationId?: string;
+  from?: string;
 }

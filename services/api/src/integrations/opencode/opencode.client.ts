@@ -9,8 +9,26 @@ import { Logger } from '@nestjs/common';
 
 const logger = new Logger('OpenCodeClient');
 
-export function opencodeConfigured(): boolean {
-  return !!process.env.OPENCODE_SERVER_URL;
+// Multi-repo: OPENCODE_SERVERS='dynopsbc=http://host:4096,airesources=http://host:4097'
+// maps a repo key to its own `opencode serve` instance (one server binds one
+// working dir). OPENCODE_SERVER_URL stays the default/fallback server.
+export function serverFor(repo?: string): string | null {
+  const map = Object.fromEntries(
+    (process.env.OPENCODE_SERVERS ?? '')
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => {
+        const i = p.indexOf('=');
+        return [p.slice(0, i).toLowerCase(), p.slice(i + 1)] as [string, string];
+      }),
+  );
+  const key = (repo ?? '').toLowerCase().split('/').pop() ?? '';
+  return map[key] ?? process.env.OPENCODE_SERVER_URL ?? null;
+}
+
+export function opencodeConfigured(repo?: string): boolean {
+  return Boolean(serverFor(repo));
 }
 
 export interface CodeTaskResult {
@@ -35,8 +53,9 @@ export async function runCodeTask(opts: {
   model?: string;
   agent?: string;
   repo?: string;
+  branch?: string;
 }): Promise<CodeTaskResult> {
-  if (!opencodeConfigured()) {
+  if (!opencodeConfigured(opts.repo)) {
     return {
       ok: true,
       mock: true,
@@ -45,12 +64,21 @@ export async function runCodeTask(opts: {
     };
   }
 
-  const base = process.env.OPENCODE_SERVER_URL!.replace(/\/$/, '');
+  const base = serverFor(opts.repo)!.replace(/\/$/, '');
   const model = opts.model ?? process.env.OPENCODE_MODEL ?? 'ollama/qwen2.5-coder:14b';
   const agent = opts.agent ?? process.env.OPENCODE_AGENT ?? 'build';
 
+  // Branch-isolated work: OpenCode commits + pushes the branch; the platform
+  // opens the PR from it. Never main, never merge.
+  const instruction = opts.branch
+    ? `Work ONLY on branch '${opts.branch}': create it from origin/main if it doesn't exist, ` +
+      `check it out, make the changes, commit with a conventional message, and push the branch ` +
+      `to origin. Do NOT merge, do NOT touch other branches, do NOT push to main.\n\n${opts.instruction}`
+    : opts.instruction;
+
+  // Real dev tasks (compile+test loops) far exceed 2 minutes.
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
+  const timeout = setTimeout(() => controller.abort(), Number(process.env.OPENCODE_TIMEOUT_MS ?? 1_800_000));
 
   const headers = { 'content-type': 'application/json', ...authHeader() };
 
@@ -79,7 +107,7 @@ export async function runCodeTask(opts: {
       body: JSON.stringify({
         model,
         agent,
-        parts: [{ type: 'text', text: opts.instruction }],
+        parts: [{ type: 'text', text: instruction }],
       }),
       signal: controller.signal,
     });

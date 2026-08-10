@@ -129,11 +129,22 @@ enum integration_direction {
 }
 
 enum llm_provider {
+  nvidia
   ollama
   anthropic
   openai
   azure_openai
   gemini
+}
+
+// Conversation-level coverage state for the org-wide watchdog.
+enum coverage_state {
+  ok
+  at_risk
+  stalled
+  escalated
+  resolved
+  muted
 }
 
 enum ai_resource_status {
@@ -398,6 +409,26 @@ model projects {
   start_date     DateTime? @db.Date
   end_date       DateTime? @db.Date
   metadata       Json      @default("{}")
+  // ── Project Hub cross-channel mappings ──────────────────────────────────────
+  // Cosmos DynOpsCore identity (org_name + project_name are the join keys used
+  // by timelog/status reports); ADO org pairs with devops_project; Teams team +
+  // channel ids scope chat coverage; mail_keywords disambiguate multi-project
+  // customers during email attribution.
+  cosmos_org_name     String? @db.VarChar(200)
+  cosmos_project_name String? @db.VarChar(240)
+  devops_org          String? @db.VarChar(120)
+  teams_team_id       String? @db.VarChar(120)
+  teams_channel_ids   Json    @default("[]")
+  teams_chat_ids      Json    @default("[]")
+  mail_keywords       Json    @default("[]")
+  health              String? @db.VarChar(10) // green|amber|red (denormalized)
+  lead_user_id        String? @db.Uuid
+  // ── Tech stack (WS6) ─────────────────────────────────────────────────────────
+  // repos: [{repo:'owner/name', kind:'bc-al'|'fno-xpp'|'web', branch?}]
+  // isvs:  [{name, publisher?, source:'manual'|'repo'|'env'}]
+  // metadata.repo_profile = {analyzedAt, repos:[{repo, kind, apps, framework, readme}]}
+  repos               Json    @default("[]")
+  isvs                Json    @default("[]")
   created_at     DateTime  @default(now()) @db.Timestamptz(6)
   updated_at     DateTime  @updatedAt @db.Timestamptz(6)
 
@@ -406,7 +437,9 @@ model projects {
   tasks      tasks[]
   documents  documents[]
   agent_runs agent_runs[]
+  missions   missions[]
 
+  @@unique([workspace_id, cosmos_org_name, cosmos_project_name])
   @@index([customer_id])
   @@index([status])
   @@index([workspace_id])
@@ -542,6 +575,12 @@ model approvals {
   requested_by_id String?         @db.Uuid
   decision_notes  String?         @db.Text
   expires_at      DateTime?       @db.Timestamptz(6)
+  // Auto-approve-on-timeout (coverage watchdog tiered autonomy): a pending
+  // approval past auto_execute_at is approved + executed by the sweeper unless
+  // a human touched it first (any human decision/edit nulls this). Distinct
+  // from expires_at, which means "cancel after deadline".
+  auto_execute_at DateTime?       @db.Timestamptz(6)
+  auto_policy     Json?
   decided_at      DateTime?       @db.Timestamptz(6)
   created_at      DateTime        @default(now()) @db.Timestamptz(6)
   updated_at      DateTime        @updatedAt @db.Timestamptz(6)
@@ -592,6 +631,7 @@ model tasks {
   @@index([project_id])
   @@index([mission_id])
   @@index([assignee_user_id])
+  @@index([due_date])
   @@index([workspace_id])
   @@map("tasks")
 }
@@ -607,17 +647,20 @@ model missions {
   goal             String   @db.Text
   status           String   @default("planning") @db.VarChar(20) // planning|running|blocked|done|failed
   lead_resource_id String?  @db.Uuid
+  project_id       String?  @db.Uuid
   summary          Json     @default("{}")
   created_by       String?  @db.Uuid
   created_at       DateTime @default(now()) @db.Timestamptz(6)
   updated_at       DateTime @updatedAt @db.Timestamptz(6)
 
   lead_resource ai_resources?    @relation("mission_lead", fields: [lead_resource_id], references: [id], onDelete: SetNull)
+  project       projects?        @relation(fields: [project_id], references: [id], onDelete: SetNull)
   tasks         tasks[]
   messages      agent_messages[]
 
   @@index([workspace_id])
   @@index([status])
+  @@index([project_id])
   @@map("missions")
 }
 
@@ -1124,13 +1167,161 @@ model code_tasks {
   status       String   @default("draft") // draft|approved|running|done|failed
   result       Json?
   share_url    String?  @db.Text
+  mission_id   String?  @db.Uuid // dev-pod stage that spawned this task (if any)
   created_by   String?  @db.Uuid
   created_at   DateTime @default(now()) @db.Timestamptz(6)
   updated_at   DateTime @updatedAt @db.Timestamptz(6)
 
   @@index([workspace_id])
   @@index([created_at])
+  @@index([mission_id])
   @@map("code_tasks")
+}
+
+// ── Org-wide coverage watchdog: per-conversation ledger ───────────────────────
+// One row per email conversation / Teams channel thread / chat, tracking the
+// last inbound (customer) vs last outbound (team) message so pure predicates
+// can detect stalled topics (unanswered inbound, broken promise, dropped
+// thread). Sole writer: CoverageWatchdogService. Plain uuid pointers (no FK
+// cascades) — this is an observability ledger, not part of the activity graph.
+model coverage_threads {
+  workspace_id      String?        @db.Uuid
+  id                String         @id @default(uuid()) @db.Uuid
+  channel           activity_channel
+  integration_id    String?        @db.Uuid
+  mailbox           String?        @db.VarChar(320)
+  team_id           String?        @db.VarChar(120)
+  channel_id        String?        @db.VarChar(160)
+  conversation_key  String         @db.VarChar(360) // email conversationId | teams root msg id | chat id
+  subject           String?        @db.VarChar(500)
+  customer_id       String?        @db.Uuid
+  project_id        String?        @db.Uuid
+  counterpart       String?        @db.VarChar(320) // customer address / display name
+  last_inbound_at   DateTime?      @db.Timestamptz(6)
+  last_inbound_from String?        @db.VarChar(320)
+  last_outbound_at  DateTime?      @db.Timestamptz(6)
+  last_outbound_by  String?        @db.VarChar(320)
+  last_direction    String?        @db.VarChar(10) // inbound | outbound
+  msg_count         Int            @default(0)
+  commitment        Json? // {text, detected_at, due_at}
+  state             coverage_state @default(ok)
+  stalled_reason    String?        @db.VarChar(60) // unanswered_inbound | broken_promise | dropped_thread
+  sla_deadline_at   DateTime?      @db.Timestamptz(6)
+  last_action_at    DateTime?      @db.Timestamptz(6) // remediation cooldown anchor
+  activity_id       String?        @db.Uuid // spawned remediation activity
+  mission_id        String?        @db.Uuid
+  metadata          Json           @default("{}") // actions[], mute info, autosend log
+  created_at        DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime       @updatedAt @db.Timestamptz(6)
+
+  @@unique([integration_id, conversation_key])
+  @@index([workspace_id])
+  @@index([state, sla_deadline_at])
+  @@index([customer_id])
+  @@index([project_id])
+  @@map("coverage_threads")
+}
+
+// ── Customer D365 environments (BC + F&O) — secure connection registry ───────
+// Per-customer environment credentials for automatic connectivity. Secrets are
+// AES-256-GCM encrypted at rest (CRED_MASTER_KEY) and NEVER returned by the
+// API. Probes discover companies/version so doc generation and consulting
+// features are grounded in the customer's REAL environment.
+model customer_environments {
+  workspace_id     String?  @db.Uuid
+  id               String   @id @default(uuid()) @db.Uuid
+  customer_id      String   @db.Uuid
+  project_id       String?  @db.Uuid
+  kind             String   @db.VarChar(10) // bc | fno | web
+  name             String   @db.VarChar(200) // e.g. "Production", "UAT"
+  base_url         String?  @db.VarChar(400) // fno: https://x.operations.dynamics.com ; bc: environment name
+  tenant_id        String   @db.VarChar(64)
+  client_id        String   @db.VarChar(64)
+  secret_encrypted String?  @db.Text // AES-256-GCM (iv:tag:cipher, base64)
+  // UI service account for authenticated screenshot capture (dedicated
+  // read-only user, MFA'sız sandbox hesabı önerilir). Password AES-256-GCM.
+  ui_user               String? @db.VarChar(200)
+  ui_password_encrypted String? @db.Text
+  // Donated browser session (Playwright storageState) — the owner logs in ONCE
+  // with MFA via scripts/env-login.mjs; the session is stored encrypted and
+  // SLIDES: every successful screenshot refreshes it. Expiry → notification.
+  ui_session_encrypted  String?   @db.Text
+  ui_session_saved_at   DateTime? @db.Timestamptz(6)
+  status           String   @default("new") @db.VarChar(20) // new|connected|error
+  last_probe_at    DateTime? @db.Timestamptz(6)
+  last_error       String?  @db.Text
+  metadata         Json     @default("{}") // {companies:[], version, discovered_at}
+  created_by       String?  @db.Uuid
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([customer_id])
+  @@index([kind, status])
+  @@map("customer_environments")
+}
+
+// ── ECC-inspired: continuous learning (instincts) ─────────────────────────────
+// Confidence-scored lessons distilled from human feedback (edited/rejected
+// drafts, mission outcomes). High-confidence instincts are injected into agent
+// prompts; outcomes feed confidence back (+applied&approved / −rejected).
+model instincts {
+  workspace_id    String?  @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
+  resource_id     String?  @db.Uuid // null = workspace-wide
+  trigger         String   @db.VarChar(300) // keyword context that activates the lesson
+  lesson          String   @db.Text
+  confidence      Float    @default(0.5)
+  evidence_count  Int      @default(1)
+  source          String   @default("approval_feedback") @db.VarChar(30) // approval_feedback|mission_outcome|manual
+  status          String   @default("active") @db.VarChar(16) // active|retired
+  last_applied_at DateTime? @db.Timestamptz(6)
+  metadata        Json     @default("{}")
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([resource_id, status])
+  @@index([confidence])
+  @@map("instincts")
+}
+
+// ── ECC-inspired: always-on rules (standards layered into every prompt) ──────
+model workspace_rules {
+  workspace_id String?  @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  scope        String   @default("workspace") @db.VarChar(80) // 'workspace' | resource_key
+  title        String   @db.VarChar(200)
+  body         String   @db.Text
+  is_active    Boolean  @default(true)
+  sort         Int      @default(0)
+  created_by   String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([scope, is_active])
+  @@map("workspace_rules")
+}
+
+// ── ECC-inspired: deterministic guard hooks on tool execution ────────────────
+// Pre-execution checks enforced in ExecutorService (outside the model):
+// block → tool_call fails with reason; warn → proceed + audit entry.
+model guard_hooks {
+  workspace_id String?  @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  tool_pattern String   @db.VarChar(80) // 'send_email' | 'send_*' | '*'
+  check        String   @db.VarChar(40) // blocked_recipient_domains|max_body_length|required_fields|quiet_hours_send|external_recipient_allowlist
+  config       Json     @default("{}")
+  action       String   @default("warn") @db.VarChar(10) // block|warn
+  is_active    Boolean  @default(true)
+  created_by   String?  @db.Uuid
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([workspace_id])
+  @@index([is_active])
+  @@map("guard_hooks")
 }
 
 // Per-account reply configuration: for each connected mailbox/account, whether
@@ -1200,14 +1391,14 @@ model style_examples {
 model resource_memories {
   workspace_id       String?  @db.Uuid
   id                 String   @id @default(uuid()) @db.Uuid
-  resource_id        String   @db.Uuid
+  resource_id        String?  @db.Uuid // null = workspace-wide Memory Vault entry
   customer_id        String?  @db.Uuid
   scope              String   @default("general") @db.VarChar(40)
   content            String   @db.Text
   source_activity_id String?  @db.Uuid
   created_at         DateTime @default(now()) @db.Timestamptz(6)
 
-  resource ai_resources @relation("resource_memory", fields: [resource_id], references: [id], onDelete: Cascade)
+  resource ai_resources? @relation("resource_memory", fields: [resource_id], references: [id], onDelete: Cascade)
 
   @@index([resource_id])
   @@index([workspace_id])

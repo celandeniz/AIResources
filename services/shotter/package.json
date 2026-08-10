@@ -1,0 +1,11 @@
+{
+  "name": "@dynops/shotter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Authenticated D365 screenshot sidecar (Playwright) for customer-doc generation",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

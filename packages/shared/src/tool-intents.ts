@@ -23,10 +23,14 @@ export type ToolName =
   | 'devops_create_workitem'
   | 'devops_update_workitem'
   | 'devops_comment'
+  | 'devops_set_state'
+  | 'devops_link_workitem'
   // github (multi-repo)
   | 'github_create_issue'
   | 'github_comment'
   | 'github_review_pr'
+  | 'github_create_pr'
+  | 'github_dispatch_workflow'
   // opsconnect (portal + hub)
   | 'opsconnect_create_project'
   | 'opsconnect_create_task'
@@ -85,12 +89,20 @@ export const TOOL_REGISTRY: Record<ToolName, ToolDef> = {
   rag_search: { name: 'rag_search', sensitive: false, risk: 'low', targets: 'internal', description: 'Search the knowledge base (read-only).' },
 
   devops_create_workitem: { name: 'devops_create_workitem', sensitive: true, risk: 'medium', targets: 'devops', description: 'Create an Azure DevOps work item.' },
-  devops_update_workitem: { name: 'devops_update_workitem', sensitive: true, risk: 'medium', targets: 'devops', description: 'Update an Azure DevOps work item.' },
-  devops_comment: { name: 'devops_comment', sensitive: true, risk: 'low', targets: 'devops', description: 'Comment on an Azure DevOps work item.' },
+  devops_update_workitem: { name: 'devops_update_workitem', sensitive: true, risk: 'medium', targets: 'devops', description: 'Update an Azure DevOps work item (title/description are customer-visible).' },
+  // Tiered autonomy: ADO comments + whitelisted state transitions + links are
+  // internal writes — auto-executed (the adapter enforces the state whitelist).
+  devops_comment: { name: 'devops_comment', sensitive: false, risk: 'low', targets: 'devops', description: 'Comment on an Azure DevOps work item (auto).' },
+  devops_set_state: { name: 'devops_set_state', sensitive: false, risk: 'low', targets: 'devops', description: 'Advance an ADO work item to a whitelisted state (auto; never Closed/Done).' },
+  devops_link_workitem: { name: 'devops_link_workitem', sensitive: false, risk: 'low', targets: 'devops', description: 'Add a relation or hyperlink to an ADO work item (auto).' },
 
   github_create_issue: { name: 'github_create_issue', sensitive: true, risk: 'medium', targets: 'github', description: 'Open a GitHub issue.' },
   github_comment: { name: 'github_comment', sensitive: true, risk: 'low', targets: 'github', description: 'Comment on a GitHub issue/PR.' },
   github_review_pr: { name: 'github_review_pr', sensitive: true, risk: 'medium', targets: 'github', description: 'Post a GitHub PR review.' },
+  // Ship sensitive:true for the first supervised dev-pod run; flip to false
+  // once a sandbox run is verified (merge remains the human gate either way).
+  github_create_pr: { name: 'github_create_pr', sensitive: true, risk: 'medium', targets: 'github', description: 'Open a GitHub pull request from an existing branch (draft by default).' },
+  github_dispatch_workflow: { name: 'github_dispatch_workflow', sensitive: false, risk: 'low', targets: 'github', description: 'Trigger a GitHub Actions workflow (workflow_dispatch) on a branch (auto).' },
 
   opsconnect_create_project: { name: 'opsconnect_create_project', sensitive: true, risk: 'medium', targets: 'opsconnect', description: 'Create an OpsConnect project.' },
   opsconnect_create_task: { name: 'opsconnect_create_task', sensitive: true, risk: 'low', targets: 'opsconnect', description: 'Create an OpsConnect task.' },
@@ -135,6 +147,18 @@ export const ALWAYS_APPROVE: ReadonlySet<ToolName> = new Set(
 
 export function isKnownTool(name: string): name is ToolName {
   return name in TOOL_REGISTRY;
+}
+
+// Per-workspace tool-policy overrides (tiered autonomy): 'auto' forces a tool
+// past the approval gate, 'approve' forces it through. All sensitivity checks
+// route through here so a workspace policy plugs in at exactly one seam.
+export type ToolPolicy = Record<string, 'auto' | 'approve' | undefined>;
+
+export function isSensitive(tool: string, wsPolicy?: ToolPolicy | null): boolean {
+  const override = wsPolicy?.[tool];
+  if (override === 'auto') return false;
+  if (override === 'approve') return true;
+  return isKnownTool(tool) ? TOOL_REGISTRY[tool].sensitive : true; // unknown ⇒ fail closed
 }
 
 export const ToolIntentSchema = z.object({

@@ -100,10 +100,11 @@ def reason_node(state: GraphState) -> GraphState:
         usage = {**usage, "provider": getattr(provider, "name", resource.provider), "model": resource.model}
         return {"result": result, "usage": usage}
     except Exception as e:
-        # Primary provider errored (e.g. Gemini 503 on the free tier, or a cloud
-        # timeout). Prefer a REAL local fallback (Ollama) over the deterministic
-        # stub so quality degrades gracefully — Gemini quality when available,
-        # a real local draft when it's not, stub only if local is also down.
+        # Primary provider errored (e.g. NIM 429 after exhausting its backoff,
+        # Gemini 503 on the free tier, or a cloud timeout). Prefer a REAL local
+        # fallback (Ollama) over the deterministic stub so quality degrades
+        # gracefully — cloud quality when available, a real local draft when
+        # it's not, stub only if local is also down.
         import os
 
         if resource.provider != "ollama":

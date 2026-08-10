@@ -10,6 +10,15 @@
         "deepseek-r1:14b": { "name": "DeepSeek R1 14B" },
         "gpt-oss:20b": { "name": "GPT-OSS 20B" }
       }
+    },
+    "nvidia": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "NVIDIA NIM (free cloud)",
+      "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{env:NVIDIA_API_KEY}" },
+      "models": {
+        "qwen/qwen2.5-coder-32b-instruct": { "name": "Qwen2.5 Coder 32B (NIM)" },
+        "meta/llama-3.3-70b-instruct": { "name": "Llama 3.3 70B (NIM)" }
+      }
     }
   },
   "model": "ollama/qwen2.5-coder:14b",
