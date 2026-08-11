@@ -811,7 +811,7 @@ export class StoryDocsController {
   // pressing apply on that draft.
   @Roles('consultant')
   @Post('projects/:id/stories/enrich-bulk')
-  async enrichBulk(@Param('id') id: string, @Body() body?: { limit?: number; maxScore?: number }) {
+  async enrichBulk(@Param('id') id: string, @Body() body?: { limit?: number; maxScore?: number; states?: string[] }) {
     const project = await (this.prisma as any).projects.findUnique({
       where: { id },
       include: { customer: { select: { id: true, name: true } } },
@@ -828,13 +828,18 @@ export class StoryDocsController {
 
     const maxScore = Math.min(Math.max(Number(body?.maxScore ?? 50), 1), 100);
     const limit = Math.min(Math.max(Number(body?.limit ?? 10), 1), 25); // hard cap: free-tier NIM quota
+    // Status filter (empty = every state) — mirrors the chips on the board so
+    // "develop the New ones" is expressible, not just "develop the weakest".
+    const wanted = (body?.states ?? []).map((s) => String(s).toLowerCase()).filter(Boolean);
     const targets = (audit.rows as any[])
       .filter((r) => Number(r.score ?? 0) < maxScore)
+      .filter((r) => !wanted.length || wanted.includes(String(r.state || '—').toLowerCase()))
       .sort((a, b) => Number(a.score ?? 0) - Number(b.score ?? 0))
       .slice(0, limit);
-    if (!targets.length) return { ok: false, detail: `puanı ${maxScore} altında story yok — geliştirilecek bir şey görünmüyor` };
+    const scope = wanted.length ? ` (durum: ${body!.states!.join(', ')})` : '';
+    if (!targets.length) return { ok: false, detail: `puanı ${maxScore} altında story yok${scope} — geliştirilecek bir şey görünmüyor` };
 
-    const run = { startedAt: new Date().toISOString(), finishedAt: null as string | null, total: targets.length, done: 0, failed: 0, maxScore, drafts: [] as any[] };
+    const run = { startedAt: new Date().toISOString(), finishedAt: null as string | null, total: targets.length, done: 0, failed: 0, maxScore, states: body?.states ?? [], drafts: [] as any[] };
     await (this.prisma as any).projects.update({ where: { id }, data: { metadata: { ...meta, enrich_run: run } } });
 
     // Detached sweep. tenantStore is re-entered explicitly: the HTTP request
@@ -891,7 +896,7 @@ export class StoryDocsController {
       await this.audit.log({ actorType: 'system', action: 'execute', entityType: 'projects', entityId: id, summary: `Toplu story geliştirme: ${run.drafts.length} taslak hazır, ${run.failed} başarısız (${run.total} story)` });
     });
 
-    return { ok: true, started: true, total: targets.length, detail: `${targets.length} story arka planda geliştiriliyor — taslaklar hazır oldukça listelenecek` };
+    return { ok: true, started: true, total: targets.length, detail: `${targets.length} story${scope} arka planda geliştiriliyor — taslaklar hazır oldukça listelenecek` };
   }
 
   // Progress + the drafts waiting for review.

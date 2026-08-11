@@ -216,7 +216,7 @@ function fillFromDraft(wid: string, title: string | undefined, draft: any, conte
 // Bulk enrichment: the sweep runs server-side (each story is a ~1-2 min model
 // call), so this only starts it and follows progress, listing each finished
 // draft for one-by-one review.
-function BulkEnrich({ projectId, weak, onPick }: { projectId: string; weak: number; onPick: (d: any) => void }) {
+function BulkEnrich({ projectId, weak, states, onPick }: { projectId: string; weak: number; states: string[]; onPick: (d: any) => void }) {
   const [state, setState] = useState<any>(null);
   const [starting, setStarting] = useState(false);
 
@@ -235,7 +235,8 @@ function BulkEnrich({ projectId, weak, onPick }: { projectId: string; weak: numb
   async function start() {
     setStarting(true);
     try {
-      const r: any = await api(`/projects/${projectId}/stories/enrich-bulk`, { method: 'POST', body: JSON.stringify({ limit: 10 }) });
+      // The sweep targets exactly what the status filter selected.
+      const r: any = await api(`/projects/${projectId}/stories/enrich-bulk`, { method: 'POST', body: JSON.stringify({ limit: 10, states }) });
       if (!r?.ok) throw new Error(r?.detail ?? 'başlatılamadı');
       toast.success(r.detail);
       await poll();
@@ -249,9 +250,12 @@ function BulkEnrich({ projectId, weak, onPick }: { projectId: string; weak: numb
     <div className="mb-4 rounded-lg border border-border bg-muted/20 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">🤖 Toplu story geliştirme</span>
-        <span className="text-xs text-muted-foreground">{weak} story 50 puanın altında — Epic/Feature + proje amacı + ürün yığınından geliştirilir.</span>
+        <span className="text-xs text-muted-foreground">
+          {states.length ? <>Seçili durum ({states.join(', ')}) içinde </> : null}
+          {weak} story 50 puanın altında — Epic/Feature + proje amacı + ürün yığınından geliştirilir.
+        </span>
         <Button size="sm" className="ml-auto" onClick={start} disabled={starting || active}>
-          {active ? `Çalışıyor… ${run.done}/${run.total}` : starting ? 'Başlatılıyor…' : 'En zayıf 10 story’yi geliştir'}
+          {active ? `Çalışıyor… ${run.done}/${run.total}` : starting ? 'Başlatılıyor…' : `En zayıf ${Math.min(weak, 10)} story’yi geliştir`}
         </Button>
       </div>
       {run && (
@@ -281,6 +285,7 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
   const [docBusy, setDocBusy] = useState<string | null>(null);
   const [planView, setPlanView] = useState<any>(null); // {storyId, planDocId, plan, story}
   const [fill, setFill] = useState<any>(null); // {storyId, title, description, acceptance}
+  const [selectedStates, setSelectedStates] = useState<string[]>([]); // boş = tümü
 
   async function run() {
     setBusy(true);
@@ -358,8 +363,20 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
     } catch (e: any) { toast.error(e.message); } finally { setDocBusy(null); }
   }
 
-  const rows: any[] = audit?.rows ?? [];
+  const allRows: any[] = audit?.rows ?? [];
+  // Status filter: pick the ADO states the AI should act on. It drives BOTH the
+  // table and the bulk sweep — filtering the view without filtering the action
+  // would make "enrich the New ones" impossible to express.
+  const stateCounts = allRows.reduce((acc: Record<string, number>, r) => {
+    const s = String(r.state || '—');
+    acc[s] = (acc[s] ?? 0) + 1;
+    return acc;
+  }, {});
+  const states = Object.keys(stateCounts).sort((a, b) => stateCounts[b] - stateCounts[a]);
+  const rows = selectedStates.length ? allRows.filter((r) => selectedStates.includes(String(r.state || '—'))) : allRows;
   const weak = rows.filter((r) => Number(r.score ?? 0) < 50).length;
+  const toggleState = (s: string) =>
+    setSelectedStates((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
   return (
     <Card className="mt-6 p-5">
       <SectionTitle right={
@@ -370,7 +387,44 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
           <Button size="sm" variant="outline" onClick={run} disabled={busy}>{busy ? 'Analiz ediliyor…' : audit ? 'Yeniden analiz et' : 'User story analizi'}</Button>
         </div>
       }>User Story Kalitesi &amp; Dokümantasyon</SectionTitle>
-      {weak > 0 && <BulkEnrich projectId={projectId} weak={weak} onPick={(d: any) => setFill(fillFromDraft(d.wid, d.story?.title, d.draft, d.context, d.docId))} />}
+      {allRows.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Durum:</span>
+          <button
+            type="button"
+            onClick={() => setSelectedStates([])}
+            className={`rounded-full border px-2.5 py-1 text-xs transition ${!selectedStates.length ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/50'}`}
+          >
+            Tümü ({allRows.length})
+          </button>
+          {states.map((s) => {
+            const on = selectedStates.includes(s);
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => toggleState(s)}
+                className={`rounded-full border px-2.5 py-1 text-xs transition ${on ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:bg-muted/50'}`}
+              >
+                {s} ({stateCounts[s]})
+              </button>
+            );
+          })}
+          {selectedStates.length > 0 && (
+            <span className="ml-1 text-xs text-muted-foreground">
+              → {rows.length} story seçili{weak > 0 ? `, ${weak} tanesi zayıf` : ''}
+            </span>
+          )}
+        </div>
+      )}
+      {weak > 0 && (
+        <BulkEnrich
+          projectId={projectId}
+          weak={weak}
+          states={selectedStates}
+          onPick={(d: any) => setFill(fillFromDraft(d.wid, d.story?.title, d.draft, d.context, d.docId))}
+        />
+      )}
       {planView?.notReady && (
         <div className="mb-4 rounded-lg border border-amber-500/50 bg-amber-500/5 p-4">
           <div className="mb-2 flex items-center justify-between">
@@ -529,14 +583,20 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
           </div>
         </div>
       )}
-      {!rows.length ? (
+      {!allRows.length ? (
         <p className="text-sm text-muted-foreground">Henüz analiz yok — &quot;User story analizi&quot; ile açıklama yeterliliği puanlanır ve teslim edilmiş dokümantasyon kontrol edilir.</p>
+      ) : !rows.length ? (
+        <p className="text-sm text-muted-foreground">
+          Seçili durumda ({selectedStates.join(', ')}) story yok —{' '}
+          <button type="button" className="text-primary underline" onClick={() => setSelectedStates([])}>filtreyi temizle</button>.
+        </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/40 text-[11px] uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="px-3 py-2 text-left font-medium">Story</th>
+                <th className="px-3 py-2 text-left font-medium">Durum</th>
                 <th className="px-3 py-2 text-left font-medium">Puan</th>
                 <th className="px-3 py-2 text-left font-medium">Eksik</th>
                 <th className="px-3 py-2 text-center font-medium">Doküman</th>
@@ -552,7 +612,12 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
                         <span className="font-mono text-xs text-muted-foreground">#{r.id}</span> {r.title}
                       </a>
                     ) : (<span>#{r.id} {r.title}</span>)}
-                    {r.assignee && <div className="text-xs text-muted-foreground">{r.assignee} · {r.state}</div>}
+                    {r.assignee && <div className="text-xs text-muted-foreground">{r.assignee}</div>}
+                  </td>
+                  <td className="px-3 py-2">
+                    <Badge variant={/new|to do|proposed/i.test(String(r.state)) ? 'warning' : /active|doing|progress/i.test(String(r.state)) ? 'default' : /closed|done|removed/i.test(String(r.state)) ? 'neutral' : 'outline'}>
+                      {r.state || '—'}
+                    </Badge>
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
