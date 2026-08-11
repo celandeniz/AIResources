@@ -256,7 +256,7 @@ export async function captureEnvironmentShots(
 
     const out: { caption: string; dataUri: string }[] = [];
     const expired = new Set<string>();
-    for (const shot of shots.slice(0, 4)) {
+    for (const shot of shots.slice(0, 6)) {
       const env = pickEnv(shot.platform);
       if (!env || expired.has(env.id)) continue;
       const url = buildShotUrl(env, shot);

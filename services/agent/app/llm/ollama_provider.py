@@ -19,7 +19,13 @@ class OllamaProvider:
         self.model = model
         self.base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [

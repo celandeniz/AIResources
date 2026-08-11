@@ -19,7 +19,13 @@ class AzureOpenAIProvider:
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
         )
 
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         resp = self.client.chat.completions.create(
             model=self.model,
             temperature=temperature,

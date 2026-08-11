@@ -31,7 +31,13 @@ class GeminiProvider:
         if not self.key:
             raise RuntimeError("GEMINI_API_KEY/GOOGLE_API_KEY not set")
 
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         url = f"{self.base}/models/{self.model}:generateContent"
         payload: dict[str, Any] = {
             "system_instruction": {"parts": [{"text": system}]},

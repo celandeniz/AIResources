@@ -1,6 +1,7 @@
 """Provider abstraction. No global default — provider is chosen per AI Resource.
 
-Each provider exposes generate_json(system, user, temperature) -> (dict, usage).
+Each provider exposes generate_json(system, user, temperature, images=None) ->
+(dict, usage).
 If a provider is unconfigured (no API key), the factory falls back to the
 deterministic StubProvider so the platform runs with zero credentials.
 """
@@ -14,7 +15,13 @@ from typing import Any, Protocol
 class LLMProvider(Protocol):
     name: str
 
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         ...
 
 

@@ -18,7 +18,13 @@ class StubProvider:
         self.model = model
 
     # Generic text path (used only if a graph calls generate_json directly).
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         return (
             {
                 "draft": {"kind": "note", "content": "Stub reasoning (no LLM key configured).", "recipients": [], "citations": []},

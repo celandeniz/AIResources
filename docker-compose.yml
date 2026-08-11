@@ -89,6 +89,17 @@ services:
     ports:
       - "4600:4600"
 
+  # AI-assisted draw.io editor/generator sidecar.
+  drawio:
+    build:
+      context: "https://github.com/DayuanJiang/next-ai-draw-io.git#main"
+    environment:
+      OPENAI_API_KEY: ${NVIDIA_API_KEY:-}
+      OPENAI_BASE_URL: https://integrate.api.nvidia.com/v1
+      AI_MODEL: ${DRAWIO_MODEL:-meta/llama-3.3-70b-instruct}
+    ports:
+      - "3002:3000"
+
   api:
     build: *node-build
     image: dynops-node:local
@@ -113,6 +124,8 @@ services:
       CRED_MASTER_KEY: ${CRED_MASTER_KEY:-}
       # Screenshot sidecar for customer-doc images
       SHOTTER_URL: ${SHOTTER_URL:-http://shotter:4600}
+      # Draw.io generation sidecar; the API falls back to the agent/NIM path.
+      DRAWIO_URL: ${DRAWIO_URL:-http://drawio:3000}
       # Microsoft Graph (Outlook + Teams) app-only — empty => connectors stay mock/idle
       GRAPH_TENANT_ID: ${GRAPH_TENANT_ID:-}
       GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID:-}
