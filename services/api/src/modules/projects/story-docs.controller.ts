@@ -1340,8 +1340,12 @@ export class StoryDocsController {
   @Roles('consultant')
   @Get('projects/:id/stories/:wid/doc-run')
   async docRun(@Param('id') id: string, @Param('wid') wid: string) {
-    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { metadata: true } });
-    if (!project) return { ok: false, detail: 'proje bulunamadı' };
+    // Tenant guard (IDOR): the build run in metadata carries the docId + section
+    // names, so scope to the caller's workspace like every sibling endpoint.
+    const wsId = currentWorkspaceId();
+    if (!wsId) return { ok: false, detail: 'workspace bağlamı gerekli' };
+    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { workspace_id: true, metadata: true } });
+    if (!project || project.workspace_id !== wsId) return { ok: false, detail: 'proje bulunamadı' };
     const run = (((project.metadata as any) ?? {}).doc_build_run ?? null) as DocBuildRun | null;
     if (!run || String(run.storyId) !== String(wid)) return { ok: true, run: null };
     return { ok: true, run, ...(run.phase === 'done' && run.docId ? { docId: run.docId } : {}) };
@@ -1841,10 +1845,16 @@ export class StoryDocsController {
   @Roles('consultant')
   @Get('projects/:id/enrich-run')
   async enrichRun(@Param('id') id: string) {
-    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { metadata: true } });
+    // Tenant guard (IDOR): findUnique by primary key bypasses tenant
+    // middleware, and the draft list below is otherwise project-scoped only —
+    // both would leak another workspace's runs/drafts without this check.
+    const wsId = currentWorkspaceId();
+    if (!wsId) return { ok: false, detail: 'workspace bağlamı gerekli' };
+    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { workspace_id: true, metadata: true } });
+    if (!project || project.workspace_id !== wsId) return { ok: false, detail: 'proje bulunamadı' };
     const run = ((project?.metadata as any) ?? {}).enrich_run ?? null;
     const pending = await this.prisma.documents.findMany({
-      where: { project_id: id, status: 'uploaded', source_type: 'agent_draft' },
+      where: { workspace_id: wsId, project_id: id, status: 'uploaded', source_type: 'agent_draft' },
       orderBy: { created_at: 'desc' },
       take: 40,
       select: { id: true, title: true, metadata: true, created_at: true },
