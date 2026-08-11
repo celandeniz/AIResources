@@ -17,7 +17,13 @@ class OpenAIProvider:
 
         self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         resp = self.client.chat.completions.create(
             model=self.model,
             temperature=temperature,

@@ -5,11 +5,11 @@
 // diyagramı/adım adım gerçek örnek/sık hatalar) and optionally announce it
 // back on the ADO work item.
 
-import { Body, Controller, Get, Logger, Param, Post, Res } from '@nestjs/common';
-import { randomBytes } from 'node:crypto';
+import { Body, Controller, Get, Logger, Param, Patch, Post, Query, Res } from '@nestjs/common';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { Response } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Roles } from '../../auth/decorators';
+import { CurrentUser, Roles, type AuthUser } from '../../auth/decorators';
 import { AuditService } from '../../common/audit.service';
 import { currentWorkspaceId, tenantStore } from '../../common/tenant';
 import {
@@ -19,11 +19,146 @@ import { renderDocHtml } from './doc-html';
 import { PLATFORM_LABEL, buildEnvironmentContext, captureEnvironmentShots, type ShotSpec } from '../environments/environments.module';
 import { getFileContent } from '../../integrations/github/github.adapter';
 import { extractKeywords, findRelevantFiles, type RepoProfile } from './repo-profile';
+import {
+  assembleDocSections,
+  buildCoverSection,
+  buildSectionPrompt,
+  buildSectionWarningStub,
+  createDocSectionDefinitions,
+  prepareFlowSection,
+  resolveDocTemplateKind,
+  type DocPlan,
+  type DocScreenshot,
+  type DocSectionDefinition,
+  type GeneratedDocSection,
+  type ObservedField,
+} from './doc-sections';
 
 const AGENT_URL = process.env.AGENT_URL ?? 'http://localhost:8000';
 const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN ?? 'dev-internal-token';
+const SHOTTER_URL = process.env.SHOTTER_URL ?? 'http://shotter:4600';
 
 const DOC_SIGNAL_RE = /(dok[uü]man|documentation|training|e[ğg]itim|kullan[ıi]m k[ıi]lavuzu|user guide|\.(pdf|docx?|pptx?)\b|sharepoint\.com)/i;
+
+interface DocBuildSectionProgress {
+  key: string;
+  index: number;
+  label: string;
+  status: 'done' | 'warn';
+  model: string | null;
+  startedAt: string;
+  finishedAt: string;
+}
+
+interface DocBuildRun {
+  runId: string;
+  storyId: string;
+  planDocId: string;
+  phase: 'running' | 'done' | 'failed';
+  section: number;
+  sectionName: string | null;
+  totalSections: number;
+  startedAt: string;
+  finishedAt: string | null;
+  docId: string | null;
+  error: string | null;
+  sections: DocBuildSectionProgress[];
+  delivered?: boolean;
+  deliveryApprovalId?: string | null;
+  deliveryStatus?: 'not_requested' | 'pending_approval' | 'error';
+  deliveryError?: string | null;
+  screenshots?: number;
+  htmlPath?: string;
+  pdfPath?: string;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseObservedFields(raw: unknown): ObservedField[] {
+  const text = String(raw ?? '').trim();
+  if (!text) return [];
+  const cleaned = (value: unknown) => String(value ?? '').replace(/[\r\n|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240);
+  let values: any[] = [];
+  const start = text.indexOf('[');
+  const end = text.lastIndexOf(']');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(text.slice(start, end + 1));
+      if (Array.isArray(parsed)) values = parsed;
+    } catch { /* headed/table output is preferred; parse below */ }
+  }
+  if (!values.length) {
+    for (const line of text.split('\n')) {
+      const match = line.trim().match(/^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|?$/);
+      if (!match) continue;
+      const alan = cleaned(match[1]);
+      const deger = cleaned(match[2]);
+      if (!alan || !deger || /^(alan|field)$/i.test(alan) || /^[-:]+$/.test(alan) || /^[-:]+$/.test(deger)) continue;
+      values.push({ alan, deger });
+    }
+  }
+  const dedupe = new Set<string>();
+  return values
+    .map((value) => ({ alan: cleaned(value?.alan ?? value?.field), deger: cleaned(value?.deger ?? value?.value) }))
+    .filter((value) => {
+      if (!value.alan || !value.deger) return false;
+      const key = value.alan.toLocaleLowerCase('tr-TR');
+      if (dedupe.has(key)) return false;
+      dedupe.add(key);
+      return true;
+    })
+    .slice(0, 20);
+}
+
+function safeFilePart(value: unknown, fallback = 'dokuman'): string {
+  const part = String(value ?? '')
+    .replace(/[ıİ]/g, 'i').replace(/[şŞ]/g, 's').replace(/[ğĞ]/g, 'g')
+    .replace(/[üÜ]/g, 'u').replace(/[öÖ]/g, 'o').replace(/[çÇ]/g, 'c')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+    .slice(0, 120);
+  return part || fallback;
+}
+
+function rfc5987(value: string): string {
+  return encodeURIComponent(value).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function headingOffset(markdown: string, heading: string, from = 0): number {
+  const source = markdown.slice(Math.max(0, from));
+  const match = new RegExp(`(^|\\n)${escapeRegExp(heading)}[ \\t]*(?=\\r?\\n|$)`, 'm').exec(source);
+  if (!match) return -1;
+  return Math.max(0, from) + match.index + (match[1] ? 1 : 0);
+}
+
+function replaceMarkdownSection(
+  markdown: string,
+  definition: DocSectionDefinition,
+  nextDefinition: DocSectionDefinition | undefined,
+  replacement: string,
+): string | null {
+  const startHeading = definition.requiredHeadings[0];
+  if (!startHeading) return null;
+  const start = headingOffset(markdown, startHeading);
+  if (start < 0) return null;
+  const end = nextDefinition?.requiredHeadings[0]
+    ? headingOffset(markdown, nextDefinition.requiredHeadings[0], start + startHeading.length)
+    : markdown.length;
+  if (end < 0) return null;
+  const before = markdown.slice(0, start).replace(/[ \\t]+$/g, '');
+  const after = markdown.slice(end).replace(/^[\\r\\n]+/, '');
+  return `${before}${before ? '\n\n' : ''}${replacement.trim()}${after ? `\n\n${after}` : ''}`.trim();
+}
 
 // Enrichment output parser. The model writes HEADED PLAIN TEXT rather than a
 // JSON object nested inside the envelope's content string: asking for six
@@ -119,6 +254,50 @@ export class StoryDocsController {
   private readonly logger = new Logger('StoryDocs');
 
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+
+  private async docMetaReadinessChecks(meta: Record<string, unknown>): Promise<any[]> {
+    const example = String(meta.ornek_kayit ?? '').trim();
+    const audience = Array.isArray(meta.hedef_kitle)
+      ? meta.hedef_kitle.map((value) => String(value ?? '').trim()).filter(Boolean).join(', ')
+      : String(meta.hedef_kitle ?? '').trim();
+    const audienceSpecific = Boolean(audience) && audience.toLocaleLowerCase('tr-TR') !== 'son kullanıcı';
+    const drawioUrl = process.env.DRAWIO_URL?.trim();
+    let drawioReachable = false;
+    if (drawioUrl && meta.diagram !== false) {
+      try {
+        const response = await fetch(drawioUrl, { method: 'GET', signal: AbortSignal.timeout(2_000) });
+        drawioReachable = response.status < 500;
+        await response.body?.cancel().catch(() => {});
+      } catch {
+        drawioReachable = false;
+      }
+    }
+    return [
+      {
+        key: 'ornek_kayit', ok: Boolean(example), blocker: false,
+        message: example
+          ? `Somut örnek kayıt hazır (${example.slice(0, 120)})`
+          : 'Somut örnek kayıt yok — Ekranda ne görülür tabloları genel değerlerle üretilir',
+        fix: example ? null : { label: 'Plan meta alanlarında örnek kayıt girin', url: '#doc-plan-meta' },
+      },
+      {
+        key: 'hedef_kitle', ok: audienceSpecific, blocker: false,
+        message: audienceSpecific
+          ? `Hedef kitle özelleştirildi (${audience.slice(0, 120)})`
+          : audience
+            ? `Hedef kitle varsayılan (${audience}) — role göre özelleştirebilirsiniz`
+            : 'Hedef kitle belirtilmedi — varsayılan Son kullanıcı kullanılacak',
+        fix: audienceSpecific ? null : { label: 'Plan meta alanlarında hedef kitleyi özelleştirin', url: '#doc-plan-meta' },
+      },
+      {
+        key: 'diagram', ok: drawioReachable, blocker: false,
+        message: drawioReachable
+          ? 'Draw.io süreç şeması servisi hazır'
+          : 'Draw.io servisi yok veya erişilemiyor — süreç şeması mermaid ile üretilecek',
+        fix: drawioReachable ? null : { label: 'Draw.io sidecar yapılandırmasını kontrol edin', url: '#doc-plan-meta' },
+      },
+    ];
+  }
 
   // ── Audit: score descriptions + detect delivered documentation ─────────────
   @Roles('consultant')
@@ -229,7 +408,12 @@ export class StoryDocsController {
   // capture. The owner approves → phase 2 executes exactly this plan.
   @Roles('consultant')
   @Post('projects/:id/stories/:wid/doc-plan')
-  async planDoc(@Param('id') id: string, @Param('wid') wid: string, @Body() reqBody?: { force?: boolean }) {
+  async planDoc(
+    @Param('id') id: string,
+    @Param('wid') wid: string,
+    @Body() reqBody?: { force?: boolean },
+    @CurrentUser() user?: AuthUser,
+  ) {
     const project = await (this.prisma as any).projects.findUnique({
       where: { id },
       include: { customer: { select: { id: true, name: true } } },
@@ -261,6 +445,16 @@ export class StoryDocsController {
     const missingPlatforms = [...stack].filter((k) => !connectedKinds.has(k));
     const hasEnv = connected.length > 0;
     const hasSession = connected.some((e: any) => e.ui_session_encrypted || e.ui_user);
+    const defaultPlanMeta = {
+      hedef_kitle: 'Son kullanıcı',
+      moduller: [...stack],
+      ortam: [...new Set<string>(connected.map((e: any) => String(e.name ?? '').trim()).filter((name: string) => Boolean(name)))],
+      ornek_kayit: '',
+      surum: '1.0',
+      hazirlayan: [user?.display_name?.trim() || 'DynamicsOps'],
+      tur: 'egitim' as const,
+      diagram: true,
+    };
     const checks = [
       {
         key: 'icerik', ok: contentLen >= 150, blocker: true,
@@ -284,6 +478,7 @@ export class StoryDocsController {
         fix: hasSession ? null : { label: `Oturum bağışlayın: node scripts/env-login.mjs ${connected[0]?.id ?? '<envId>'}`, url: '/settings/environments' },
       },
     ];
+    checks.push(...await this.docMetaReadinessChecks(defaultPlanMeta));
     const blockers = checks.filter((c) => c.blocker && !c.ok);
     if (blockers.length && !reqBody?.force) {
       return {
@@ -357,7 +552,7 @@ export class StoryDocsController {
             : 'Bağlı ortam yok — ekranlar boş dizi olsun.\n') +
           'ÇIKTI FORMATI — yanıtın TAMAMI şu tek JSON nesnesi olsun; content alanına SADECE plan JSON\'unu string olarak koy:\n' +
           '{"draft":{"kind":"note","subject":null,"content":"{\\"modul\\":\\"Accounts receivable\\",\\"sirket\\":\\"USMF\\",\\"yontem\\":[\\"madde1\\",\\"madde2\\"],\\"veriseti\\":[\\"örnek veri açıklaması\\"],\\"ekranlar\\":[{\\"platform\\":\\"fno\\",\\"mi\\":\\"CustTableListPage\\",\\"cmp\\":\\"USMF\\",\\"caption\\":\\"Müşteri listesi\\"}],\\"onkosullar\\":[\\"madde\\"]}","recipients":[],"citations":[]},"reasoning_summary":"1 cümle","confidence":0.9,"needs_escalation":false,"escalate_to":null,"tool_intents":[]}\n' +
-          'yontem: dokümanın nasıl ilerleyeceği (4-6 madde, Türkçe); veriseti: hangi örnek kayıt/verilerle anlatılacağı (2-4 madde); ekranlar: en fazla 4 ekran, her biri platform alanı taşır; onkosullar: doküman için gerekenler. JSON dışında hiçbir metin yazma.',
+          'yontem: dokümanın nasıl ilerleyeceği (4-6 madde, Türkçe); veriseti: hangi örnek kayıt/verilerle anlatılacağı (2-4 madde); ekranlar: en fazla 6 ekran, her biri platform alanı taşır; onkosullar: doküman için gerekenler. JSON dışında hiçbir metin yazma.',
         provider: 'nvidia',
         model: plannerModel,
         temperature: 0.2,
@@ -429,8 +624,9 @@ export class StoryDocsController {
       sirket: plan.sirket ?? companies[0] ?? bcCompanies[0] ?? null,
       yontem: plan.yontem ?? [],
       veriseti: plan.veriseti ?? [],
-      ekranlar: (plan.ekranlar ?? []).slice(0, 4),
+      ekranlar: (plan.ekranlar ?? []).slice(0, 6),
       onkosullar: plan.onkosullar ?? [],
+      meta: defaultPlanMeta,
       assist_needed: sessionInfo.mode === 'none',
       assist_hint: sessionInfo.mode === 'none' ? `Ekran görüntüleri için: node scripts/env-login.mjs ${primary?.id ?? '<envId>'}` : null,
     };
@@ -454,235 +650,977 @@ export class StoryDocsController {
     };
   }
 
-  // ── Generate the customer-deliverable training doc for one story ───────────
-  // With planDocId (phase 2): executes the APPROVED plan — its screens feed
-  // the shotter directly and its method/dataset steer the writing.
+  @Roles('consultant')
+  @Patch('projects/:id/stories/:wid/doc-plan')
+  async updateDocPlanMeta(
+    @Param('id') id: string,
+    @Param('wid') wid: string,
+    @Body() body: {
+      planDocId?: string;
+      meta?: { hedef_kitle?: string; ornek_kayit?: string; surum?: string; tur?: string };
+    },
+  ) {
+    const wsId = currentWorkspaceId();
+    if (!wsId) return { ok: false, detail: 'workspace bağlamı gerekli' };
+    if (!body?.planDocId) return { ok: false, detail: 'planDocId gerekli' };
+    const project = await (this.prisma as any).projects.findUnique({ where: { id } });
+    if (!project || project.workspace_id !== wsId) return { ok: false, detail: 'proje bulunamadı' };
+    const planDoc = await this.prisma.documents.findFirst({
+      where: { id: body.planDocId, workspace_id: wsId, project_id: id },
+    });
+    const metadata = ((planDoc?.metadata as any) ?? {}) as Record<string, any>;
+    const currentPlan = metadata.plan as DocPlan | undefined;
+    if (!planDoc || metadata.doc_kind !== 'story_doc_plan' || !currentPlan ||
+        String(metadata.ado?.id ?? '') !== String(wid)) {
+      return { ok: false, detail: 'bu iş kalemine ait doküman planı bulunamadı' };
+    }
+
+    const requestedMeta = body.meta ?? {};
+    const metaPatch: Record<string, unknown> = {};
+    if (Object.prototype.hasOwnProperty.call(requestedMeta, 'hedef_kitle')) {
+      metaPatch.hedef_kitle = String(requestedMeta.hedef_kitle ?? '').trim().slice(0, 200);
+    }
+    if (Object.prototype.hasOwnProperty.call(requestedMeta, 'ornek_kayit')) {
+      metaPatch.ornek_kayit = String(requestedMeta.ornek_kayit ?? '').trim().slice(0, 600);
+    }
+    if (Object.prototype.hasOwnProperty.call(requestedMeta, 'surum')) {
+      metaPatch.surum = String(requestedMeta.surum ?? '').trim().slice(0, 40);
+    }
+    if (Object.prototype.hasOwnProperty.call(requestedMeta, 'tur')) {
+      const kind = String(requestedMeta.tur ?? '').trim();
+      if (!['egitim', 'surec', 'kullanim'].includes(kind)) {
+        return { ok: false, detail: 'tur egitim, surec veya kullanim olmalı' };
+      }
+      metaPatch.tur = kind;
+    }
+    const nextPlan: DocPlan = {
+      ...currentPlan,
+      meta: { ...((currentPlan.meta as any) ?? {}), ...metaPatch },
+    };
+
+    if (!project.devops_org || !project.devops_project) return { ok: false, detail: 'proje ADO eşlemesi yok' };
+    const story = await fetchWorkItemFull(project.devops_org, wid);
+    if (!story || String(story.id) !== String(wid)) return { ok: false, detail: `iş kalemi #${wid} okunamadı` };
+    const children = await fetchChildItems(project.devops_org, story).catch(() => []);
+    const contentLen =
+      (story.descriptionFull?.length ?? 0) + (story.acceptance?.length ?? 0) +
+      children.reduce((total, child) => total + (child.descriptionFull?.length ?? 0) + child.title.length, 0);
+    const adoEditUrl = `https://dev.azure.com/${project.devops_org}/${encodeURIComponent(String(project.devops_project))}/_workitems/edit/${story.id}`;
+    const allEnvs = await (this.prisma as any).customer_environments.findMany({
+      where: { customer_id: project.customer_id },
+      select: { id: true, kind: true, name: true, status: true, ui_user: true, ui_session_encrypted: true },
+    });
+    const connected = allEnvs.filter((env: any) => env.status === 'connected');
+    const stack = new Set<string>();
+    for (const repo of ((project.repos as any[]) ?? [])) {
+      stack.add(repo.kind === 'bc-al' ? 'bc' : repo.kind === 'fno-xpp' ? 'fno' : 'web');
+    }
+    for (const env of connected) stack.add(env.kind);
+    const connectedKinds = new Set<string>(connected.map((env: any) => String(env.kind)));
+    const missingPlatforms = [...stack].filter((kind) => !connectedKinds.has(kind));
+    const hasEnv = connected.length > 0;
+    const hasSession = connected.some((env: any) => env.ui_session_encrypted || env.ui_user);
+    const checks: any[] = [
+      {
+        key: 'icerik', ok: contentLen >= 150, blocker: true,
+        message: contentLen >= 150
+          ? `İçerik yeterli (${contentLen} kr — story + ${children.length} alt görev)`
+          : `İçerik YETERSİZ (${contentLen} kr): story açıklaması/kabul kriterleri ve alt görev açıklamaları neredeyse boş — anlamlı doküman üretilemez.`,
+        fix: contentLen >= 150 ? null : { label: `ADO'da #${story.id} açıklamasını ve kabul kriterlerini doldurun`, url: adoEditUrl },
+      },
+      {
+        key: 'ortam', ok: hasEnv && !missingPlatforms.length, blocker: false,
+        message: !hasEnv
+          ? 'Bağlı müşteri ortamı YOK — doküman genel kalır, ekran görüntüsü çekilemez.'
+          : missingPlatforms.length
+            ? `Bazı platformların ortamı bağlı değil: ${missingPlatforms.map((kind) => PLATFORM_LABEL[kind] ?? kind).join(', ')} — bu platformların ekranları çekilemez.`
+            : `Müşteri ortamı bağlı (${[...connectedKinds].map((kind) => PLATFORM_LABEL[kind] ?? kind).join(', ')}) — doküman gerçek ortam bilgisiyle yazılır`,
+        fix: hasEnv && !missingPlatforms.length ? null : { label: 'Müşteri Ortamları sayfasından eksik platform ortamını ekleyin', url: '/settings/environments' },
+      },
+      {
+        key: 'oturum', ok: hasSession, blocker: false,
+        message: hasSession ? 'Ekran görüntüsü oturumu hazır' : 'Oturum YOK — doküman ekran görüntüsüz üretilir.',
+        fix: hasSession ? null : { label: `Oturum bağışlayın: node scripts/env-login.mjs ${connected[0]?.id ?? '<envId>'}`, url: '/settings/environments' },
+      },
+      ...await this.docMetaReadinessChecks((nextPlan.meta as any) ?? {}),
+    ];
+    const updatedAt = new Date().toISOString();
+    await this.prisma.documents.update({
+      where: { id: planDoc.id },
+      data: {
+        metadata: {
+          ...metadata,
+          plan: nextPlan,
+          doc_kind: 'story_doc_plan',
+          planUpdatedAt: updatedAt,
+        } as any,
+      },
+    });
+    await this.audit.log({
+      actorType: 'user', action: 'update', entityType: 'documents', entityId: planDoc.id,
+      summary: `Story #${story.id} doküman planı meta alanları güncellendi`,
+    });
+    return {
+      ok: true,
+      ready: !checks.some((check) => check.blocker && !check.ok),
+      checks,
+      planDocId: planDoc.id,
+      plan: nextPlan,
+    };
+  }
+
+  private async persistDocBuildRun(projectId: string, run: DocBuildRun): Promise<void> {
+    try {
+      const fresh = await (this.prisma as any).projects.findUnique({ where: { id: projectId }, select: { metadata: true } });
+      const metadata = ((fresh?.metadata as any) ?? {}) as Record<string, unknown>;
+      const current = metadata.doc_build_run as DocBuildRun | undefined;
+      // A stale detached task must not overwrite a newer run started after it.
+      if (current?.runId && current.runId !== run.runId) return;
+      await (this.prisma as any).projects.update({
+        where: { id: projectId },
+        data: { metadata: { ...metadata, doc_build_run: run } },
+      });
+    } catch (error) {
+      this.logger.warn(`doc-build ${run.runId}: ilerleme kaydedilemedi — ${(error as Error).message}`);
+    }
+  }
+
+  private async buildDocCodeContext(project: any, story: any): Promise<string> {
+    try {
+      const profiles = (((project.metadata as any)?.repo_profile?.repos ?? []) as RepoProfile[]);
+      if (!profiles.length) return '';
+      const keywords = extractKeywords(`${story.title} ${story.descriptionFull ?? ''}`);
+      const files = findRelevantFiles(profiles, keywords, 3);
+      const parts: string[] = [];
+      let budget = 6000;
+      for (const file of files) {
+        const raw = await getFileContent(file.repo, file.path, 40_000);
+        if (!raw) continue;
+        const excerpt = raw.split('\n').slice(0, 400).join('\n').slice(0, Math.min(2500, budget));
+        if (!excerpt.trim()) continue;
+        budget -= excerpt.length;
+        parts.push(`--- ${file.repo}/${file.path} ---\n${excerpt}`);
+        if (budget <= 0) break;
+      }
+      return parts.length ? `=== İLGİLİ KOD (repo — gerçek uygulama detayı) ===\n${parts.join('\n\n')}\n\n` : '';
+    } catch {
+      return '';
+    }
+  }
+
+  private async writeDocSection(opts: {
+    project: any;
+    story: any;
+    definition: DocSectionDefinition;
+    prompt: string;
+    context: string;
+  }): Promise<{ markdown: string; model: string } | null> {
+    const hasRequiredFormat = (markdown: string): boolean => {
+      const compact = markdown.replace(/[ \t]*\|[ \t]*/g, '|').toLocaleLowerCase('tr-TR');
+      if (opts.definition.key === 'purpose') return compact.includes('|konu|beklenen durum|');
+      if (opts.definition.key === 'concepts') return compact.includes('|terim|anlamı|');
+      if (opts.definition.key === 'flow') {
+        return compact.includes('|adım|ekran|yapılan işlem|çıktı|') && /```mermaid\s*[\r\n]+\s*flowchart\s+TD\b/i.test(markdown);
+      }
+      if (opts.definition.key === 'situations') {
+        return compact.includes('|durum|olası neden|yapılacak|') && compact.includes('|türkçe|ingilizce|');
+      }
+      if (opts.definition.screenIndex) {
+        return compact.includes('|alan|örnek değer|açıklama|') &&
+          /\*\*Ekranda ne yapılır\*\*/i.test(markdown) &&
+          /\*\*Ekranda ne görülür\*\*/i.test(markdown) &&
+          markdown.includes(`[[SCREENSHOT:${opts.definition.screenIndex}]]`);
+      }
+      return true;
+    };
+    const models = (process.env.DOC_MODELS ?? 'meta/llama-3.3-70b-instruct,meta/llama-3.1-8b-instruct')
+      .split(',').map((model) => model.trim()).filter(Boolean);
+    for (const model of models) {
+      const data = await runAgent({
+        run_id: `story-doc-${opts.story.id}-${opts.definition.key}-${Date.now()}`,
+        workspace_id: opts.project.workspace_id ?? undefined,
+        ai_resource: {
+          key: 'ai_doc_writer',
+          name: 'AI Doc Writer',
+          system_prompt:
+            'Sen Dynamics 365 (BC/F&O) alanında kıdemli bir danışmansın ve müşteriye teslim edilecek eğitim/süreç dokümanı yazıyorsun.\n' +
+            `${opts.prompt}\n` +
+            'Yanıtın TAMAMI AgentResult JSON nesnesi olsun. İstenen başlıklı Markdown metninin tamamını draft.content alanına koy; JSON dışında metin yazma. ' +
+            'Diğer alanlar: draft.kind="note", recipients=[], citations=[], reasoning_summary kısa, confidence 0-1, needs_escalation=false, escalate_to=null, tool_intents=[].',
+          provider: 'nvidia',
+          model,
+          temperature: 0.35,
+          tools: [],
+          confidence_threshold: 0.5,
+        },
+        activity: {
+          id: `sd-${opts.definition.key}-${Date.now()}`,
+          channel: 'manual',
+          subject: `${opts.story.title} — ${opts.definition.label}`,
+          body: opts.context,
+          priority: 'normal',
+          customer: null,
+        },
+        context: { thread: [], rag_hints: [], rag_hits: [] },
+        options: { max_tool_intents: 0 },
+      });
+      let markdown = String(data?.draft?.content ?? '').trim();
+      const outerFence = markdown.match(/^```(?:markdown|md)\s*\n([\s\S]*)\n```\s*$/i);
+      if (outerFence) markdown = outerFence[1].trim();
+      const headingsPresent = opts.definition.requiredHeadings.every((heading) => markdown.includes(heading));
+      if (markdown.length >= 40 && headingsPresent && hasRequiredFormat(markdown)) return { markdown, model };
+      this.logger.warn(`doc-build #${opts.story.id} ${opts.definition.key}: ${model} başarısız/biçimsiz — sıradaki model`);
+    }
+    return null;
+  }
+
+  private async observeScreenshotFields(opts: {
+    project: any;
+    story: any;
+    screenIndex: number;
+    caption: string;
+    dataUri?: string;
+  }): Promise<ObservedField[]> {
+    if (!process.env.NVIDIA_API_KEY?.trim() || !opts.dataUri) return [];
+    const encoded = opts.dataUri.match(/^data:image\/(?:png|jpe?g);base64,([A-Za-z0-9+/=]+)$/i)?.[1];
+    if (!encoded) return [];
+    const data = await runAgent({
+      run_id: `story-doc-vision-${opts.story.id}-${opts.screenIndex}-${Date.now()}`,
+      workspace_id: opts.project.workspace_id ?? undefined,
+      ai_resource: {
+        key: 'ai_doc_vision',
+        name: 'AI Doc Vision',
+        system_prompt:
+          'Sen D365 ekranlarını inceleyen kıdemli bir danışmansın. Görselde açıkça okunabilen ve eğitim adımı için anlamlı alan/değer çiftlerini çıkar. ' +
+          'Parola, erişim belirteci veya gizli değerleri alma. Okunmayan değeri uydurma. draft.content içinde yalnız `| Alan | Değer |` başlıklı Markdown tablosu yaz. ' +
+          'Yanıtın TAMAMI AgentResult JSON nesnesi olsun; draft.kind="note", recipients=[], citations=[], tool_intents=[].',
+        provider: 'nvidia',
+        model: process.env.NVIDIA_VISION_MODEL?.trim() || 'meta/llama-3.2-90b-vision-instruct',
+        temperature: 0.1,
+        tools: [],
+        confidence_threshold: 0.5,
+      },
+      activity: {
+        id: `sdv-${opts.screenIndex}-${Date.now()}`,
+        channel: 'manual',
+        subject: `${opts.caption} — ekran alanları`,
+        body: `#${opts.story.id} ${opts.story.title}; ekran ${opts.screenIndex}: ${opts.caption}`,
+        priority: 'normal',
+        customer: null,
+      },
+      context: { thread: [], rag_hints: [], rag_hits: [] },
+      options: { max_tool_intents: 0 },
+      images: [encoded],
+    });
+    const usage = data?.token_usage ?? {};
+    if (usage.provider !== 'nvidia' || usage.fallback_from || usage.fallback || usage.stub) return [];
+    return parseObservedFields(data?.draft?.content);
+  }
+
+  private async queueDocDeliveryApproval(opts: {
+    workspaceId: string;
+    project: any;
+    story: any;
+    doc: any;
+    requestedById?: string | null;
+  }): Promise<string> {
+    const resource =
+      (await this.prisma.ai_resources.findFirst({ where: { key: 'ai_delivery_pm', status: 'active' } })) ??
+      (await this.prisma.ai_resources.findFirst({ where: { status: 'active' } }));
+    if (!resource) throw new Error('aktif AI kaynağı bulunamadı');
+
+    const integrations = await this.prisma.integrations.findMany({
+      where: { type: 'ado_org' as any },
+      select: { id: true, config: true, is_mock: true },
+    });
+    const targetOrg = String(opts.project.devops_org ?? '').toLocaleLowerCase('en-US');
+    const matchingTargets = integrations.filter((integration) =>
+      String((integration.config as any)?.org ?? '').toLocaleLowerCase('en-US') === targetOrg);
+    const target = matchingTargets.find((integration) => !integration.is_mock) ?? matchingTargets[0];
+    const comment = `📘 Müşteri eğitim dokümanı hazırlandı: "${opts.doc.title}" (DynOps doc ${opts.doc.id}). Platform üzerinden görüntülenebilir/PDF alınabilir.`;
+
+    const args = {
+      workItemId: opts.story.id,
+      project: opts.project.devops_project,
+      text: comment,
+      documentId: opts.doc.id,
+    };
+    return (this.prisma as any).$transaction(async (tx: any) => {
+      const activity = await tx.activities.create({
+        data: {
+          workspace_id: opts.workspaceId,
+          channel: 'manual',
+          subject: `ADO #${opts.story.id} — eğitim dokümanı bildirimi`.slice(0, 500),
+          body: comment,
+          status: 'awaiting_approval',
+          customer_id: opts.project.customer_id ?? undefined,
+          project_id: opts.project.id,
+          requires_approval: true,
+          metadata: { source: 'story_doc', document_id: opts.doc.id, work_item_id: String(opts.story.id) },
+        },
+      });
+      const agentRun = await tx.agent_runs.create({
+        data: {
+          workspace_id: opts.workspaceId,
+          activity_id: activity.id,
+          ai_resource_id: resource.id,
+          customer_id: opts.project.customer_id ?? undefined,
+          project_id: opts.project.id,
+          llm_provider: resource.llm_provider,
+          llm_model: resource.llm_model,
+          status: 'needs_approval',
+          input: { source: 'story_doc', document_id: opts.doc.id },
+          output: {},
+          tools_used: ['devops_comment'],
+        },
+      });
+      const toolCall = await tx.tool_calls.create({
+        data: {
+          workspace_id: opts.workspaceId,
+          agent_run_id: agentRun.id,
+          name: 'devops_comment',
+          args,
+          requires_approval: true,
+          risk_level: 'high',
+          status: 'awaiting_approval',
+          sequence: 0,
+          target_integration_id: target?.id ?? undefined,
+        },
+      });
+      const approval = await tx.approvals.create({
+        data: {
+          workspace_id: opts.workspaceId,
+          activity_id: activity.id,
+          agent_run_id: agentRun.id,
+          tool_call_id: toolCall.id,
+          action: 'devops_comment',
+          payload: args,
+          risk_level: 'high',
+          reason: `ADO #${opts.story.id} eğitim dokümanı hazır bildirimi`.slice(0, 200),
+          status: 'pending',
+          requested_by_id: isUuid(opts.requestedById) ? opts.requestedById : undefined,
+          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
+      return approval.id as string;
+    });
+  }
+
+  private async executeDocBuild(opts: {
+    project: any;
+    story: any;
+    planDocId: string;
+    plan: DocPlan;
+    definitions: DocSectionDefinition[];
+    deliver: boolean;
+    requestedById?: string | null;
+    workspaceId: string;
+    run: DocBuildRun;
+  }): Promise<void> {
+    const { project, story, plan, run } = opts;
+    try {
+      const [comments, docChildren, envContext, codeBlock] = await Promise.all([
+        fetchWorkItemComments(project.devops_org, String(story.id), 15, { filterSelf: true }).catch(() => []),
+        fetchChildItems(project.devops_org, story).catch(() => []),
+        buildEnvironmentContext(this.prisma, project.customer_id, project.id).catch(() => ''),
+        this.buildDocCodeContext(project, story),
+      ]);
+      const planBlock =
+        `=== ONAYLANMIŞ PLAN (dokümanı BU plana göre yaz) ===\n` +
+        `Platform: ${plan.platform ?? '-'} · Ortam: ${plan.ortam ?? '-'} · Şirket: ${plan.sirket ?? '-'} · Modül: ${plan.modul ?? '-'}\n` +
+        `Yöntem:\n${(plan.yontem ?? []).map((item) => `- ${String(item)}`).join('\n')}\n` +
+        `Veri seti:\n${(plan.veriseti ?? []).map((item) => `- ${String(item)}`).join('\n')}\n\n`;
+      const context =
+        `MÜŞTERİ: ${project.customer?.name ?? project.name}\nPROJE: ${project.name} (ADO: ${project.devops_org}/${project.devops_project})\n` +
+        `İŞ KALEMİ: #${story.id} — ${story.title} [${story.type}/${story.state}]${story.assignee ? ` — sorumlu: ${story.assignee}` : ''}\n\n` +
+        planBlock +
+        (envContext ? `${envContext}\n\n` : '') +
+        codeBlock +
+        `=== AÇIKLAMA ===\n${story.descriptionFull || '(boş)'}\n\n` +
+        (story.acceptance ? `=== KABUL KRİTERLERİ ===\n${story.acceptance}\n\n` : '') +
+        (docChildren.length
+          ? `=== ALT GÖREVLER (${docChildren.length}) ===\n${docChildren.map((child) => `- #${child.id} [${child.state}] ${child.title}${child.descriptionFull ? `: ${child.descriptionFull.slice(0, 500)}` : ''}`).join('\n')}\n\n`
+          : '') +
+        (comments.length ? `=== YORUMLAR ===\n${comments.map((comment) => `${comment.by ?? '?'}: ${comment.text.slice(0, 400)}`).join('\n')}\n` : '');
+
+      const generated: GeneratedDocSection[] = [];
+      const screenshots: DocScreenshot[] = [];
+      let diagram: Awaited<ReturnType<typeof prepareFlowSection>>['diagram'] = null;
+      const templateKind = resolveDocTemplateKind(plan.meta?.tur);
+      const pacingMs = Math.min(2000, Math.max(1000, Number(process.env.DOC_SECTION_PACING_MS ?? 1500) || 1500));
+
+      for (let position = 0; position < opts.definitions.length; position++) {
+        const definition = opts.definitions[position];
+        const startedAt = new Date().toISOString();
+        let markdown = '';
+        let model: string | null = null;
+        let status: 'done' | 'warn' = 'done';
+        try {
+          if (!definition.modelRequired) {
+            markdown = buildCoverSection({ title: story.title, plan, tur: templateKind });
+          } else {
+            let observedFields: ObservedField[] | undefined;
+            let prompt: string | null;
+            if (definition.key === 'flow') {
+              const prepared = await prepareFlowSection({
+                title: story.title,
+                plan,
+                tur: templateKind,
+                processSummary: (plan.yontem ?? []).map(String).join(' → '),
+              });
+              diagram = prepared.diagram;
+              prompt = prepared.prompt;
+            } else {
+              if (definition.screenIndex) {
+                const screen = plan.ekranlar?.[definition.screenIndex - 1] ?? {};
+                const caption = String(screen.caption ?? screen.title ?? `Ekran ${definition.screenIndex}`).trim();
+                const spec = { ...screen, caption } as ShotSpec;
+                const shot = await captureEnvironmentShots(this.prisma, project.customer_id, [spec], project.id)
+                  .then((items) => items[0] ?? null)
+                  .catch(() => null);
+                screenshots.push({
+                  screenIndex: definition.screenIndex,
+                  caption,
+                  ...(shot?.dataUri ? { dataUri: shot.dataUri } : { placeholder: `📷 [Ekran görüntüsü: ${caption}]` }),
+                });
+                observedFields = await this.observeScreenshotFields({
+                  project,
+                  story,
+                  screenIndex: definition.screenIndex,
+                  caption,
+                  dataUri: shot?.dataUri,
+                }).catch(() => []);
+              }
+              prompt = buildSectionPrompt(definition, {
+                title: story.title,
+                plan,
+                tur: templateKind,
+                hasSolutionStack: Boolean(envContext && envContext.includes('ÇÖZÜM YIĞINI')),
+                processSummary: (plan.yontem ?? []).map(String).join(' → '),
+              }, observedFields);
+            }
+            const result = prompt ? await this.writeDocSection({ project, story, definition, prompt, context }) : null;
+            if (result) {
+              markdown = result.markdown;
+              model = result.model;
+            } else {
+              status = 'warn';
+              markdown = buildSectionWarningStub(definition);
+            }
+          }
+        } catch (error) {
+          status = 'warn';
+          markdown = buildSectionWarningStub(definition);
+          this.logger.warn(`doc-build ${run.runId} ${definition.key}: ${(error as Error).message}`);
+        }
+
+        generated.push({
+          key: definition.key,
+          index: definition.index,
+          screenIndex: definition.screenIndex,
+          markdown,
+          status,
+          model,
+        });
+        run.section = definition.index;
+        run.sectionName = definition.label;
+        run.sections.push({
+          key: definition.key,
+          index: definition.index,
+          label: definition.label,
+          status,
+          model,
+          startedAt,
+          finishedAt: new Date().toISOString(),
+        });
+        await this.persistDocBuildRun(project.id, run);
+        if (position < opts.definitions.length - 1) await wait(pacingMs);
+      }
+
+      const assembled = await assembleDocSections({ sections: generated, plan, diagram, screenshots });
+      const capturedShots = screenshots.filter((shot) => Boolean(shot.dataUri)).length;
+      const models = [...new Set(generated.map((section) => section.model).filter((model): model is string => Boolean(model)))];
+      const generatedAt = new Date().toISOString();
+      const documentMetadata: Record<string, unknown> = {
+        content: assembled.markdown,
+        doc_kind: 'story_training_doc',
+        ado: { org: project.devops_org, project: project.devops_project, id: story.id, title: story.title },
+        model: models[0] ?? null,
+        screenshots: capturedShots,
+        generatedAt,
+        meta: plan.meta ?? {},
+        drawio_xml: assembled.drawioXml,
+        drawio_source: assembled.drawioSource,
+        diagram_rendered: assembled.diagramRendered,
+        sections: generated,
+      };
+      const doc = await this.prisma.documents.create({
+        data: {
+          workspace_id: project.workspace_id ?? undefined,
+          title: `${story.title} — Eğitim Dokümanı`.slice(0, 400),
+          source_type: 'agent_draft',
+          mime_type: 'text/markdown',
+          status: 'uploaded',
+          customer_id: project.customer_id ?? undefined,
+          project_id: project.id,
+          metadata: documentMetadata as any,
+        },
+      });
+
+      const currentPlanDoc = await this.prisma.documents.findFirst({
+        where: { id: opts.planDocId, workspace_id: opts.workspaceId, project_id: project.id },
+        select: { metadata: true },
+      }).catch(() => null);
+      if (currentPlanDoc) {
+        await this.prisma.documents.update({
+          where: { id: opts.planDocId },
+          data: {
+            status: 'processed' as any,
+            metadata: {
+              ...(((currentPlanDoc.metadata as any) ?? {}) as Record<string, unknown>),
+              plan,
+              doc_kind: 'story_doc_plan',
+              executedAt: generatedAt,
+              outputDocId: doc.id,
+            } as any,
+          },
+        }).catch(() => {});
+      }
+
+      let approvalId: string | null = null;
+      let deliveryError: string | null = null;
+      if (opts.deliver) {
+        try {
+          approvalId = await this.queueDocDeliveryApproval({
+            workspaceId: opts.workspaceId,
+            project,
+            story,
+            doc,
+            requestedById: opts.requestedById,
+          });
+        } catch (error) {
+          deliveryError = (error as Error).message.slice(0, 300);
+          this.logger.warn(`doc-build ${run.runId}: ADO bildirim onayı kurulamadı — ${deliveryError}`);
+        }
+        await this.prisma.documents.update({
+          where: { id: doc.id },
+          data: {
+            metadata: {
+              ...documentMetadata,
+              delivery: approvalId
+                ? { requested: true, status: 'pending_approval', approvalId }
+                : { requested: true, status: 'error', error: deliveryError },
+            },
+          },
+        }).catch(() => {});
+      }
+
+      run.phase = 'done';
+      run.finishedAt = new Date().toISOString();
+      run.docId = doc.id;
+      run.error = null;
+      run.delivered = false;
+      run.deliveryApprovalId = approvalId;
+      run.deliveryStatus = opts.deliver ? (approvalId ? 'pending_approval' : 'error') : 'not_requested';
+      run.deliveryError = deliveryError;
+      run.screenshots = capturedShots;
+      run.htmlPath = `/story-docs/${doc.id}/html`;
+      run.pdfPath = `/story-docs/${doc.id}/pdf`;
+      await this.persistDocBuildRun(project.id, run);
+      await this.audit.log({
+        actorType: 'system',
+        action: 'execute',
+        entityType: 'documents',
+        entityId: doc.id,
+        summary: `Story #${story.id} eğitim dokümanı üretildi${approvalId ? ' + ADO bildirimi onaya gönderildi' : ''}`,
+      }).catch(() => {});
+    } catch (error) {
+      run.phase = 'failed';
+      run.finishedAt = new Date().toISOString();
+      run.error = (error as Error).message.slice(0, 500);
+      await this.persistDocBuildRun(project.id, run);
+      this.logger.error(`doc-build ${run.runId} başarısız: ${run.error}`);
+    }
+  }
+
+  // ── Detached customer-deliverable document build ──────────────────────────
   @Roles('consultant')
   @Post('projects/:id/stories/:wid/doc')
-  async generateDoc(@Param('id') id: string, @Param('wid') wid: string, @Body() body: { deliver?: boolean; planDocId?: string }) {
+  async generateDoc(
+    @Param('id') id: string,
+    @Param('wid') wid: string,
+    @Body() body: { deliver?: boolean; planDocId?: string },
+    @CurrentUser() user?: AuthUser,
+  ) {
+    const wsId = currentWorkspaceId();
+    if (!wsId) return { ok: false, detail: 'workspace bağlamı gerekli' };
+    if (!body?.planDocId) return { ok: false, detail: 'onaylı doküman planı gerekli' };
     const project = await (this.prisma as any).projects.findUnique({
       where: { id },
       include: { customer: { select: { id: true, name: true } } },
     });
-    if (!project?.devops_org) return { ok: false, detail: 'proje ADO eşlemesi yok' };
+    if (!project || project.workspace_id !== wsId) return { ok: false, detail: 'proje bulunamadı' };
+    if (!project.devops_org || !project.devops_project) return { ok: false, detail: 'proje ADO eşlemesi yok' };
+
+    const planDoc = await this.prisma.documents.findFirst({
+      where: { id: body.planDocId, workspace_id: wsId, project_id: id },
+    });
+    const planMetadata = (planDoc?.metadata as any) ?? {};
+    const rawPlan = planMetadata.plan as DocPlan | undefined;
+    if (!planDoc || planMetadata.doc_kind !== 'story_doc_plan' || !rawPlan) {
+      return { ok: false, detail: 'onaylı doküman planı bulunamadı' };
+    }
     const story = await fetchWorkItemFull(project.devops_org, wid);
-    if (!story) return { ok: false, detail: `iş kalemi #${wid} okunamadı` };
-    const comments = await fetchWorkItemComments(project.devops_org, wid, 15, { filterSelf: true }).catch(() => []);
-    const docChildren = await fetchChildItems(project.devops_org, story).catch(() => []);
-
-    // Approved plan (phase 2): its method/dataset steer the writing; its
-    // screens are captured verbatim (no ad-hoc planning).
-    let approvedPlan: any = null;
-    if (body?.planDocId) {
-      const planDoc = await this.prisma.documents.findFirst({ where: { id: body.planDocId } });
-      approvedPlan = (planDoc?.metadata as any)?.plan ?? null;
+    if (!story || String(story.id) !== String(wid)) return { ok: false, detail: `iş kalemi #${wid} okunamadı` };
+    const planAdo = planMetadata.ado ?? {};
+    if (String(planAdo.id ?? '') !== String(story.id) ||
+        String(planAdo.org ?? '') !== String(project.devops_org) ||
+        String(planAdo.project ?? '') !== String(project.devops_project)) {
+      return { ok: false, detail: 'doküman planı bu iş kalemine ait değil' };
     }
 
-    // Ground the document in the customer's REAL discovered environments +
-    // the project's tech stack (repos/ISVs) — senior-consultant behaviour.
-    const envContext = await buildEnvironmentContext(this.prisma, project.customer_id, project.id);
-
-    // Story-matched code excerpts (≤3 files, ~6k kr cap) from the project's
-    // cached repo profiles — real implementation detail feeds the writing.
-    let codeBlock = '';
-    try {
-      const profiles = (((project.metadata as any)?.repo_profile?.repos ?? []) as RepoProfile[]);
-      if (profiles.length) {
-        const keywords = extractKeywords(`${story.title} ${story.descriptionFull ?? ''}`);
-        const files = findRelevantFiles(profiles, keywords, 3);
-        const parts: string[] = [];
-        let budget = 6000;
-        for (const f of files) {
-          const raw = await getFileContent(f.repo, f.path, 40_000);
-          if (!raw) continue;
-          const excerpt = raw.split('\n').slice(0, 400).join('\n').slice(0, Math.min(2500, budget));
-          if (!excerpt.trim()) continue;
-          budget -= excerpt.length;
-          parts.push(`--- ${f.repo}/${f.path} ---\n${excerpt}`);
-          if (budget <= 0) break;
-        }
-        if (parts.length) codeBlock = `=== İLGİLİ KOD (repo — gerçek uygulama detayı) ===\n${parts.join('\n\n')}\n\n`;
-      }
-    } catch { /* best-effort */ }
-
-    const planBlock = approvedPlan
-      ? `=== ONAYLANMIŞ PLAN (dokümanı BU plana göre yaz) ===\n` +
-        `Platform: ${approvedPlan.platform} · Ortam: ${approvedPlan.ortam ?? '-'} · Şirket: ${approvedPlan.sirket ?? '-'} · Modül: ${approvedPlan.modul ?? '-'}\n` +
-        `Yöntem:\n${(approvedPlan.yontem ?? []).map((m: string) => `- ${m}`).join('\n')}\n` +
-        `Veri seti:\n${(approvedPlan.veriseti ?? []).map((m: string) => `- ${m}`).join('\n')}\n\n`
-      : '';
-
-    const context =
-      `MÜŞTERİ: ${project.customer?.name ?? project.name}\nPROJE: ${project.name} (ADO: ${project.devops_org}/${project.devops_project})\n` +
-      `İŞ KALEMİ: #${story.id} — ${story.title} [${story.type}/${story.state}]${story.assignee ? ` — sorumlu: ${story.assignee}` : ''}\n\n` +
-      planBlock +
-      (envContext ? `${envContext}\n\n` : '') +
-      codeBlock +
-      `=== AÇIKLAMA ===\n${story.descriptionFull || '(boş)'}\n\n` +
-      (story.acceptance ? `=== KABUL KRİTERLERİ ===\n${story.acceptance}\n\n` : '') +
-      (docChildren.length
-        ? `=== ALT GÖREVLER (${docChildren.length}) — uygulama detayı buradan ===\n${docChildren.map((c) => `- #${c.id} [${c.state}] ${c.title}${c.descriptionFull ? `: ${c.descriptionFull.slice(0, 500)}` : ''}`).join('\n')}\n\n`
-        : '') +
-      (comments.length ? `=== YORUMLAR ===\n${comments.map((c) => `${c.by ?? '?'}: ${c.text.slice(0, 400)}`).join('\n')}\n` : '');
-
-    // Two-part generation: each half fits comfortably in the output window and
-    // the free tier's throughput, and each section gets more room for depth.
-    const RULES =
-      'KURALLAR: Story açıklaması zayıfsa bile alan bilginle senaryoyu D365 standart süreçlerine dayandırarak doldur; uydurma kayıt numarası yazma, örnek değerleri "örn." diye işaretle; tamamen Türkçe yaz (D365 alan/menü adları İngilizce kalabilir).\n' +
-      'ÇIKTI FORMATI — yanıtın TAMAMI şu tek JSON nesnesi olsun, markdown metnin TAMAMINI draft.content alanına koy:\n' +
-      '{"draft":{"kind":"note","subject":null,"content":"<TÜM MARKDOWN DOKÜMAN BURAYA>","recipients":[],"citations":[]},"reasoning_summary":"1 cümle","confidence":0.9,"needs_escalation":false,"escalate_to":null,"tool_intents":[]}\n' +
-      'JSON dışında hiçbir metin yazma.';
-    // Model ladder: the 70B writer first; when the free-tier gateway is
-    // congested (5xx/timeout → degraded response), fall back to the fast 8B so
-    // the document still ships (model is recorded in metadata).
-    const DOC_MODELS = (process.env.DOC_MODELS ?? 'meta/llama-3.3-70b-instruct,meta/llama-3.1-8b-instruct')
-      .split(',').map((s) => s.trim()).filter(Boolean);
-    const callPart = async (partPrompt: string, tag: string) => {
-      for (const model of DOC_MODELS) {
-        const data = await runAgent({
-          run_id: `story-doc-${wid}-${tag}-${Date.now()}`,
-          workspace_id: project.workspace_id ?? undefined,
-          ai_resource: {
-            key: 'ai_doc_writer',
-            name: 'AI Doc Writer',
-            system_prompt: 'Sen Dynamics 365 (BC/F&O) alanında kıdemli bir danışmansın ve müşteriye teslim edilecek eğitim/süreç dokümanı yazıyorsun. ' + partPrompt + '\n' + RULES,
-            provider: 'nvidia',
-            model,
-            temperature: 0.35,
-            tools: [],
-            confidence_threshold: 0.5,
-          },
-          activity: { id: `sd-${tag}-${Date.now()}`, channel: 'manual', subject: `${story.title} — eğitim dokümanı`, body: context, priority: 'normal', customer: null },
-          context: { thread: [], rag_hints: [], rag_hits: [] },
-          options: { max_tool_intents: 0 },
-        });
-        if (data && String(data?.draft?.content ?? '').trim().length >= 200) return data;
-        this.logger.warn(`story-doc ${tag}: ${model} başarısız — sıradaki model deneniyor`);
-      }
-      return null;
+    const latestProject = await (this.prisma as any).projects.findUnique({ where: { id }, select: { metadata: true } });
+    const projectMetadata = ((latestProject?.metadata as any) ?? {}) as Record<string, unknown>;
+    const activeRun = projectMetadata.doc_build_run as DocBuildRun | undefined;
+    if (activeRun?.phase === 'running' && !activeRun.finishedAt) {
+      return { ok: false, detail: `doküman koşusu zaten çalışıyor (${activeRun.section}/${activeRun.totalSections})`, run: activeRun };
+    }
+    const asTextList = (value: unknown): string[] => Array.isArray(value)
+      ? value.map((item) => String(item ?? '').trim()).filter(Boolean).slice(0, 20)
+      : [];
+    const rawMeta = rawPlan.meta && typeof rawPlan.meta === 'object' && !Array.isArray(rawPlan.meta)
+      ? rawPlan.meta
+      : {};
+    const plan: DocPlan = {
+      ...rawPlan,
+      meta: { ...rawMeta, tur: resolveDocTemplateKind(rawMeta.tur) },
+      yontem: asTextList(rawPlan.yontem),
+      veriseti: asTextList(rawPlan.veriseti),
+      onkosullar: asTextList(rawPlan.onkosullar),
+      ekranlar: (Array.isArray(rawPlan.ekranlar) ? rawPlan.ekranlar : [])
+        .filter((screen) => Boolean(screen) && typeof screen === 'object' && !Array.isArray(screen))
+        .slice(0, 6),
     };
-
-    const part1 = await callPart(
-      'draft.content alanına dokümanın İLK YARISINI markdown olarak yaz — SADECE şu bölümler:\n' +
-      '# <Doküman başlığı>\n' +
-      '## 1. Amaç ve Kapsam\n(iş senaryosu, hangi süreç, kimin için; 1 markdown tablo ile Ortam/Modül/İlgili kayıt özetini ver; bağlamda ÇÖZÜM YIĞINI verildiyse "### 1.1 Çözüm Bileşenleri" alt başlığında Platform | Bileşen (Uygulama/ISV) | Yayıncı/Sürüm kolonlu bir markdown tablosu ekle — SADECE bağlamdaki gerçek bileşenleri listele)\n' +
-      '## 2. Ön Koşullar ve Kurulum\n(gerekli parametreler, roller, ana veriler — D365 menü yolları ile: örn. "Sales & Marketing > Setup > ..."; alt başlıklar 2.1, 2.2 kullan; ekran görüntüsü gereken yerlere "📷 [Ekran görüntüsü: <ne gösterilecek>]" satırı koy)\n' +
-      '## 3. Süreç Akışı\n(kısa giriş cümlesi + SADECE bir ```mermaid\\nflowchart TD``` bloğu — başlangıç/işlem/karar/bitiş düğümleriyle süreci çiz; düğüm metinleri Türkçe ve kısa, tırnak içinde)',
-      'p1',
-    );
-    const md1 = String(part1?.draft?.content ?? '').trim();
-    if (!md1 || md1.length < 200) return { ok: false, detail: 'doküman (bölüm 1-3) üretilemedi — tekrar deneyin' };
-
-    const part2 = await callPart(
-      'Dokümanın İLK YARISI (bölüm 1-3) zaten yazıldı. draft.content alanına İKİNCİ YARISINI markdown olarak yaz — SADECE şu bölümler:\n' +
-      '## 4. Adım Adım Uygulama — Gerçek Örnek\n(Adım 1..N alt başlıklarıyla; her adımda D365 ekran/menü yolu, girilecek alanlar ve iş kaleminden gelen GERÇEK değerlerle somut örnek; muhasebe/veri etkisi varsa Borç/Alacak veya önce/sonra markdown tablosu; ekran görüntüsü gereken yerlere "📷 [Ekran görüntüsü: <ne gösterilecek>]" satırı)\n' +
-      '## 5. Doğrulama ve Teslim Notları\n(nasıl test edilir, UAT önerisi, raporlama/izleme notları)\n' +
-      '## 6. Sık Karşılaşılan Hatalar\n(en az 3 gerçekçi hata mesajı + nedeni + çözümü, madde madde)',
-      'p2',
-    );
-    const md2 = String(part2?.draft?.content ?? '').trim();
-    if (!md2 || md2.length < 200) return { ok: false, detail: 'doküman (bölüm 4-6) üretilemedi — tekrar deneyin' };
-
-    let markdown = `${md1}\n\n${md2}`;
-    const data = part2;
-
-    // ── Live screenshots from the customer environment (best-effort) ─────────
-    // A small model call plans up to 4 D365 deep links (menu item + company)
-    // for this scenario; the shotter sidecar logs in with the env's UI service
-    // account and captures them; images are embedded into the document.
-    let shotCount = 0;
-    try {
-      // Approved plan carries the exact screens — skip ad-hoc planning.
-      if (approvedPlan?.ekranlar?.length) {
-        const shots = await captureEnvironmentShots(this.prisma, project.customer_id, approvedPlan.ekranlar as ShotSpec[], project.id);
-        if (shots.length) {
-          shotCount = shots.length;
-          markdown += '\n\n## Ekran Görüntüleri (canlı ortamdan)\n' +
-            shots.map((s, i) => `**Şekil ${i + 1} — ${s.caption}**\n\n![${s.caption}](${s.dataUri})`).join('\n\n');
-        }
-        throw { skipAdhoc: true };
-      }
-      const plan = await runAgent({
-        run_id: `story-shots-${wid}-${Date.now()}`,
-        workspace_id: project.workspace_id ?? undefined,
-        ai_resource: {
-          key: 'ai_shot_planner',
-          name: 'AI Shot Planner',
-          system_prompt:
-            'Sen bir D365 Finance & SCM uzmanısın. Verilen senaryo için canlı ortamdan çekilecek en fazla 4 ekranı planla. ' +
-            'Her ekran için D365 F&O menu item adı (URL mi= parametresi, örn. CustTableListPage, CustTable, SalesTableListPage, VendTableListPage, LedgerJournalTable5) ve kısa Türkçe başlık ver. ' +
-            'Senaryoda şirket (örn. USMF) geçiyorsa cmp olarak onu kullan.\n' +
-            'ÇIKTI FORMATI — yanıtın TAMAMI şu tek JSON nesnesi olsun; content alanına SADECE plan dizisini string olarak koy:\n' +
-            '{"draft":{"kind":"note","subject":null,"content":"[{\\"mi\\":\\"CustTableListPage\\",\\"cmp\\":\\"USMF\\",\\"caption\\":\\"Müşteri listesi\\"}]","recipients":[],"citations":[]},"reasoning_summary":"1 cümle","confidence":0.9,"needs_escalation":false,"escalate_to":null,"tool_intents":[]}\n' +
-            'JSON dışında hiçbir metin yazma.',
-          provider: 'nvidia',
-          model: 'meta/llama-3.1-8b-instruct',
-          temperature: 0.1,
-          tools: [],
-          confidence_threshold: 0.5,
-        },
-        activity: { id: `sp-${Date.now()}`, channel: 'manual', subject: story.title, body: context.slice(0, 2500), priority: 'normal', customer: null },
-        context: { thread: [], rag_hints: [], rag_hits: [] },
-        options: { max_tool_intents: 0 },
-      });
-      let specs: ShotSpec[] = [];
-      const planContent = String(plan?.draft?.content ?? '');
-      try {
-        specs = JSON.parse(planContent.slice(planContent.indexOf('['), planContent.lastIndexOf(']') + 1));
-      } catch { /* plan yoksa ekran fazı atlanır */ }
-      if (specs.length) {
-        const shots = await captureEnvironmentShots(this.prisma, project.customer_id, specs, project.id);
-        if (shots.length) {
-          shotCount = shots.length;
-          markdown += '\n\n## Ekran Görüntüleri (canlı ortamdan)\n' +
-            shots.map((s, i) => `**Şekil ${i + 1} — ${s.caption}**\n\n![${s.caption}](${s.dataUri})`).join('\n\n');
-        }
-      }
-    } catch (e) {
-      if (!(e as any)?.skipAdhoc) this.logger.warn(`screenshot phase skipped: ${(e as Error).message}`);
-    }
-
-    // Mark the plan as executed and link the outcome.
-    if (body?.planDocId) {
-      await this.prisma.documents.update({
-        where: { id: body.planDocId },
-        data: { status: 'processed' as any, metadata: { plan: approvedPlan, doc_kind: 'story_doc_plan', executedAt: new Date().toISOString() } },
-      }).catch(() => {});
-    }
-
-    const doc = await this.prisma.documents.create({
-      data: {
-        workspace_id: project.workspace_id ?? undefined,
-        title: `${story.title} — Eğitim Dokümanı`.slice(0, 400),
-        source_type: 'agent_draft',
-        mime_type: 'text/markdown',
-        status: 'uploaded',
-        customer_id: project.customer_id ?? undefined,
-        project_id: project.id,
-        metadata: {
-          content: markdown,
-          doc_kind: 'story_training_doc',
-          ado: { org: project.devops_org, project: project.devops_project, id: story.id, title: story.title },
-          model: data?.model ?? null,
-          screenshots: shotCount,
-          generatedAt: new Date().toISOString(),
-        },
-      },
+    const definitions = createDocSectionDefinitions({ title: story.title, plan, tur: plan.meta?.tur });
+    const run: DocBuildRun = {
+      runId: randomUUID(),
+      storyId: String(story.id),
+      planDocId: planDoc.id,
+      phase: 'running',
+      section: 0,
+      sectionName: null,
+      totalSections: definitions.length,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      docId: null,
+      error: null,
+      sections: [],
+    };
+    await (this.prisma as any).projects.update({
+      where: { id },
+      data: { metadata: { ...projectMetadata, doc_build_run: run } },
     });
 
-    // Optional delivery announcement on the work item (auto-tier ADO comment).
-    let delivered = false;
-    if (body?.deliver !== false) {
-      const conn = { id: 'inline', type: 'ado_org', name: `ADO: ${project.devops_org}`, config: { org: project.devops_org }, isMock: false } as any;
-      const res = await devOpsAdapter.execute('devops_comment' as any, {
-        workItemId: story.id,
-        text: `📘 Müşteri eğitim dokümanı hazırlandı: "${doc.title}" (DynOps doc ${doc.id}). Platform üzerinden görüntülenebilir/PDF alınabilir.`,
-      }, conn);
-      delivered = Boolean(res.ok);
-      await this.audit.log({ actorType: 'system', action: 'execute', entityType: 'documents', entityId: doc.id, summary: `Story #${story.id} eğitim dokümanı üretildi${delivered ? ' + ADO bildirimi' : ''}` });
+    void tenantStore.run({ workspaceId: wsId }, async () => {
+      await this.executeDocBuild({
+        project,
+        story,
+        planDocId: planDoc.id,
+        plan,
+        definitions,
+        deliver: body.deliver !== false,
+        requestedById: user?.id ?? null,
+        workspaceId: wsId,
+        run,
+      });
+    });
+    return { ok: true, started: true, runId: run.runId };
+  }
+
+  @Roles('consultant')
+  @Get('projects/:id/stories/:wid/doc-run')
+  async docRun(@Param('id') id: string, @Param('wid') wid: string) {
+    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { metadata: true } });
+    if (!project) return { ok: false, detail: 'proje bulunamadı' };
+    const run = (((project.metadata as any) ?? {}).doc_build_run ?? null) as DocBuildRun | null;
+    if (!run || String(run.storyId) !== String(wid)) return { ok: true, run: null };
+    return { ok: true, run, ...(run.phase === 'done' && run.docId ? { docId: run.docId } : {}) };
+  }
+
+  @Roles('consultant')
+  @Post('projects/:id/stories/:wid/doc/section')
+  async regenerateDocSection(
+    @Param('id') id: string,
+    @Param('wid') wid: string,
+    @Body() body: { docId?: string; sectionKey?: string },
+  ) {
+    const wsId = currentWorkspaceId();
+    if (!wsId) return { ok: false, detail: 'workspace bağlamı gerekli' };
+    if (!body?.docId || !body?.sectionKey) return { ok: false, detail: 'docId ve sectionKey gerekli' };
+    const project = await (this.prisma as any).projects.findUnique({
+      where: { id },
+      include: { customer: { select: { id: true, name: true } } },
+    });
+    if (!project || project.workspace_id !== wsId) return { ok: false, detail: 'proje bulunamadı' };
+    const doc = await this.prisma.documents.findFirst({
+      where: { id: body.docId, workspace_id: wsId, project_id: id },
+    });
+    const documentMetadata = ((doc?.metadata as any) ?? {}) as Record<string, any>;
+    if (!doc || documentMetadata.doc_kind !== 'story_training_doc' ||
+        String(documentMetadata.ado?.id ?? '') !== String(wid) || !documentMetadata.content) {
+      return { ok: false, detail: 'bu iş kalemine ait eğitim dokümanı bulunamadı' };
+    }
+    if (!project.devops_org || !project.devops_project) return { ok: false, detail: 'proje ADO eşlemesi yok' };
+    const story = await fetchWorkItemFull(project.devops_org, wid);
+    if (!story || String(story.id) !== String(wid)) return { ok: false, detail: `iş kalemi #${wid} okunamadı` };
+
+    const planDocs = await this.prisma.documents.findMany({
+      where: { workspace_id: wsId, project_id: id },
+      orderBy: { created_at: 'desc' },
+      select: { metadata: true },
+      take: 50,
+    });
+    const planMetadataRows = planDocs
+      .map((candidate) => ((candidate.metadata as any) ?? {}) as Record<string, any>)
+      .filter((candidate) => candidate.doc_kind === 'story_doc_plan');
+    const matchingPlanMetadata =
+      planMetadataRows.find((candidate) => String(candidate.outputDocId ?? '') === String(doc.id)) ??
+      planMetadataRows.find((candidate) => String(candidate.ado?.id ?? '') === String(wid));
+    const rawPlan = matchingPlanMetadata?.plan as DocPlan | undefined;
+    if (!rawPlan) return { ok: false, detail: 'dokümanın onaylı planı bulunamadı' };
+    const plan: DocPlan = {
+      ...rawPlan,
+      meta: { ...((rawPlan.meta as any) ?? {}), tur: resolveDocTemplateKind(rawPlan.meta?.tur) },
+      ekranlar: (Array.isArray(rawPlan.ekranlar) ? rawPlan.ekranlar : []).slice(0, 6),
+    };
+    const definitions = createDocSectionDefinitions({ title: story.title, plan, tur: plan.meta?.tur });
+    const persistedSections = Array.isArray(documentMetadata.sections) ? documentMetadata.sections : [];
+    if (!persistedSections.some((section: any) => section?.key === body.sectionKey)) {
+      return { ok: false, detail: 'bölüm dokümanın kayıtlı bölüm indeksinde bulunamadı' };
+    }
+    const definitionIndex = definitions.findIndex((candidate) => candidate.key === body.sectionKey);
+    if (definitionIndex < 0) return { ok: false, detail: 'geçersiz veya bu planda bulunmayan bölüm anahtarı' };
+    const definition = definitions[definitionIndex];
+    const currentContent = String(documentMetadata.content);
+    const start = headingOffset(currentContent, definition.requiredHeadings[0] ?? '');
+    const nextDefinition = definitions[definitionIndex + 1];
+    const end = nextDefinition?.requiredHeadings[0]
+      ? headingOffset(currentContent, nextDefinition.requiredHeadings[0], Math.max(0, start) + 1)
+      : currentContent.length;
+    if (start < 0 || end < 0) return { ok: false, detail: 'dokümanda bölüm sınırı bulunamadı; içerik korunuyor' };
+    const oldSection = currentContent.slice(start, end);
+
+    const [comments, children, envContext, codeBlock] = await Promise.all([
+      fetchWorkItemComments(project.devops_org, String(story.id), 15, { filterSelf: true }).catch(() => []),
+      fetchChildItems(project.devops_org, story).catch(() => []),
+      buildEnvironmentContext(this.prisma, project.customer_id, project.id).catch(() => ''),
+      this.buildDocCodeContext(project, story),
+    ]);
+    const context =
+      `MÜŞTERİ: ${project.customer?.name ?? project.name}\nPROJE: ${project.name} (ADO: ${project.devops_org}/${project.devops_project})\n` +
+      `İŞ KALEMİ: #${story.id} — ${story.title} [${story.type}/${story.state}]\n\n` +
+      `=== ONAYLANMIŞ PLAN ===\n${JSON.stringify(plan, null, 2)}\n\n` +
+      (envContext ? `${envContext}\n\n` : '') + codeBlock +
+      `=== AÇIKLAMA ===\n${story.descriptionFull || '(boş)'}\n\n` +
+      (story.acceptance ? `=== KABUL KRİTERLERİ ===\n${story.acceptance}\n\n` : '') +
+      (children.length ? `=== ALT GÖREVLER ===\n${children.map((child) => `- #${child.id} ${child.title}: ${child.descriptionFull ?? ''}`).join('\n')}\n\n` : '') +
+      (comments.length ? `=== YORUMLAR ===\n${comments.map((comment) => `${comment.by ?? '?'}: ${comment.text.slice(0, 400)}`).join('\n')}\n` : '');
+
+    let rawMarkdown = '';
+    let model: string | null = null;
+    let diagram: Awaited<ReturnType<typeof prepareFlowSection>>['diagram'] = null;
+    const screenshots: DocScreenshot[] = [];
+    if (!definition.modelRequired) {
+      rawMarkdown = buildCoverSection({ title: story.title, plan, tur: plan.meta?.tur });
+    } else {
+      let prompt: string | null = null;
+      let observedFields: ObservedField[] | undefined;
+      if (definition.key === 'flow') {
+        const prepared = await prepareFlowSection({
+          title: story.title,
+          plan,
+          tur: plan.meta?.tur,
+          processSummary: (plan.yontem ?? []).map(String).join(' → '),
+        });
+        diagram = prepared.diagram;
+        prompt = prepared.prompt;
+      } else {
+        if (definition.screenIndex) {
+          const screen = plan.ekranlar?.[definition.screenIndex - 1] ?? {};
+          const caption = String(screen.caption ?? screen.title ?? `Ekran ${definition.screenIndex}`).trim();
+          const shot = await captureEnvironmentShots(
+            this.prisma, project.customer_id, [{ ...screen, caption } as ShotSpec], project.id,
+          ).then((items) => items[0] ?? null).catch(() => null);
+          const priorImage = oldSection.match(/!\[[^\]]*\]\((data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+)\)/i)?.[1];
+          screenshots.push({
+            screenIndex: definition.screenIndex,
+            caption,
+            ...(shot?.dataUri
+              ? { dataUri: shot.dataUri }
+              : priorImage
+                ? { dataUri: priorImage }
+                : { placeholder: `📷 [Ekran görüntüsü: ${caption}]` }),
+          });
+          observedFields = await this.observeScreenshotFields({
+            project,
+            story,
+            screenIndex: definition.screenIndex,
+            caption,
+            dataUri: shot?.dataUri,
+          }).catch(() => []);
+        }
+        prompt = buildSectionPrompt(definition, {
+          title: story.title,
+          plan,
+          tur: plan.meta?.tur,
+          hasSolutionStack: Boolean(envContext && envContext.includes('ÇÖZÜM YIĞINI')),
+          processSummary: (plan.yontem ?? []).map(String).join(' → '),
+        }, observedFields);
+      }
+      const generated = prompt
+        ? await this.writeDocSection({ project, story, definition, prompt, context })
+        : null;
+      if (!generated) return { ok: false, detail: 'bölüm modellerin hiçbiriyle üretilemedi; mevcut içerik korundu' };
+      rawMarkdown = generated.markdown;
+      model = generated.model;
     }
 
-    return { ok: true, docId: doc.id, title: doc.title, delivered, screenshots: shotCount, htmlPath: `/story-docs/${doc.id}/html` };
+    const existingDiagramSource = ['sidecar', 'nim', 'mock'].includes(String(documentMetadata.drawio_source))
+      ? documentMetadata.drawio_source as 'sidecar' | 'nim' | 'mock'
+      : 'mock';
+    const assemblyDiagram = diagram ?? (typeof documentMetadata.drawio_xml === 'string' && documentMetadata.drawio_xml
+      ? { xml: documentMetadata.drawio_xml, source: existingDiagramSource }
+      : null);
+    const assembled = await assembleDocSections({
+      sections: [{
+        key: definition.key,
+        index: definition.index,
+        screenIndex: definition.screenIndex,
+        markdown: rawMarkdown,
+        status: 'done',
+        model,
+      }],
+      plan,
+      diagram: definition.key === 'flow' ? assemblyDiagram : null,
+      screenshots,
+    });
+    let replacement = assembled.markdown;
+    if (definition.key === 'flow' && !/\(data:image\//i.test(replacement)) {
+      const priorDiagram = oldSection.match(/!\[([^\]]*)\]\((data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+)\)/i);
+      if (priorDiagram) {
+        replacement = `${replacement.replace(/```mermaid\s*[\r\n]+[\s\S]*?```/gi, '').trim()}\n\n![${priorDiagram[1]}](${priorDiagram[2]})`;
+      }
+    }
+    const nextContent = replaceMarkdownSection(currentContent, definition, nextDefinition, replacement);
+    if (!nextContent) return { ok: false, detail: 'dokümanda bölüm sınırı bulunamadı; içerik korunuyor' };
+
+    const storedSections = [...persistedSections];
+    const storedIndex = storedSections.findIndex((section: any) => section?.key === definition.key);
+    const storedSection = {
+      ...(storedIndex >= 0 ? storedSections[storedIndex] : {}),
+      key: definition.key,
+      index: definition.index,
+      screenIndex: definition.screenIndex,
+      markdown: rawMarkdown,
+      status: 'done',
+      model,
+      regeneratedAt: new Date().toISOString(),
+    };
+    if (storedIndex >= 0) storedSections[storedIndex] = storedSection;
+    else storedSections.push(storedSection);
+    const nextMetadata: Record<string, unknown> = {
+      ...documentMetadata,
+      content: nextContent,
+      sections: storedSections,
+      sectionRegeneratedAt: new Date().toISOString(),
+    };
+    if (definition.key === 'flow' && diagram?.xml) {
+      nextMetadata.drawio_xml = diagram.xml;
+      nextMetadata.drawio_source = diagram.source;
+      nextMetadata.diagram_rendered = assembled.diagramRendered;
+    }
+    await this.prisma.documents.update({ where: { id: doc.id }, data: { metadata: nextMetadata as any } });
+    await this.audit.log({
+      actorType: 'user', action: 'update', entityType: 'documents', entityId: doc.id,
+      summary: `Story #${story.id} doküman bölümü yeniden üretildi (${definition.key})`,
+    });
+    return { ok: true, docId: doc.id };
+  }
+
+  @Roles('consultant')
+  @Patch('projects/:id/documents/:docId')
+  async updateStoryDocument(
+    @Param('id') id: string,
+    @Param('docId') docId: string,
+    @Body() body: { content?: string },
+  ) {
+    const wsId = currentWorkspaceId();
+    if (!wsId) return { ok: false, detail: 'workspace bağlamı gerekli' };
+    if (typeof body?.content !== 'string') return { ok: false, detail: 'content gerekli' };
+    if (Buffer.byteLength(body.content, 'utf8') > 50 * 1024 * 1024) {
+      return { ok: false, detail: 'content 50 MB sınırını aşıyor' };
+    }
+    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { workspace_id: true } });
+    if (!project || project.workspace_id !== wsId) return { ok: false, detail: 'proje bulunamadı' };
+    const doc = await this.prisma.documents.findFirst({ where: { id: docId, workspace_id: wsId, project_id: id } });
+    const metadata = ((doc?.metadata as any) ?? {}) as Record<string, unknown>;
+    if (!doc || metadata.doc_kind !== 'story_training_doc') return { ok: false, detail: 'eğitim dokümanı bulunamadı' };
+    await this.prisma.documents.update({
+      where: { id: doc.id },
+      data: { metadata: { ...metadata, content: body.content, editedAt: new Date().toISOString() } as any },
+    });
+    await this.audit.log({
+      actorType: 'user', action: 'update', entityType: 'documents', entityId: doc.id,
+      summary: 'Eğitim dokümanı içeriği danışman tarafından düzenlendi',
+    });
+    return { ok: true, docId: doc.id };
+  }
+
+  @Roles('viewer')
+  @Get('projects/:id/documents')
+  async listProjectDocuments(@Param('id') id: string, @Query('kind') kind?: string) {
+    const wsId = currentWorkspaceId();
+    if (!wsId) return { ok: false, detail: 'workspace bağlamı gerekli' };
+    const project = await (this.prisma as any).projects.findUnique({ where: { id }, select: { workspace_id: true } });
+    if (!project || project.workspace_id !== wsId) return { ok: false, detail: 'proje bulunamadı' };
+    const rows = await this.prisma.documents.findMany({
+      where: { workspace_id: wsId, project_id: id },
+      orderBy: { created_at: 'desc' },
+      select: { id: true, title: true, metadata: true, created_at: true },
+    });
+    const requestedKind = String(kind ?? '').trim();
+    const documents = rows.flatMap((row) => {
+      const metadata = ((row.metadata as any) ?? {}) as Record<string, any>;
+      if (requestedKind && metadata.doc_kind !== requestedKind) return [];
+      const screenshotValue = metadata.screenshots;
+      const screenshots = Array.isArray(screenshotValue)
+        ? screenshotValue.length
+        : Math.max(0, Number(screenshotValue ?? 0) || 0);
+      const sections = (Array.isArray(metadata.sections) ? metadata.sections : []).map((section: any) => {
+        const key = String(section?.key ?? '');
+        const label = key === 'cover' ? 'Kapak ve meta'
+          : key === 'purpose' ? 'Amaç ve ön koşullar'
+            : key === 'concepts' ? 'Temel kavramlar'
+              : key === 'flow' ? 'Süreç akışı'
+                : key === 'situations' ? 'Durumlar ve terimler'
+                  : key.startsWith('step-') ? `Adım ${key.slice(5)}` : key;
+        return { key, index: Number(section?.index ?? 0) || null, label };
+      }).filter((section: any) => Boolean(section.key));
+      return [{
+        docId: row.id,
+        title: row.title,
+        wid: metadata.ado?.id != null ? String(metadata.ado.id) : null,
+        surum: String(metadata.meta?.surum ?? ''),
+        screenshots,
+        has_diagram: Boolean(metadata.drawio_xml),
+        generatedAt: String(metadata.generatedAt ?? row.created_at.toISOString()),
+        htmlPath: `/story-docs/${row.id}/html`,
+        pdfPath: `/story-docs/${row.id}/pdf`,
+        content: String(metadata.content ?? ''),
+        sections,
+      }];
+    });
+    return { ok: true, documents };
   }
 
   // ── Story Geliştirme Asistanı (enrichment) ─────────────────────────────────
@@ -991,7 +1929,83 @@ export class StoryDocsController {
       adoRef: meta.ado ? `${meta.ado.org}/${meta.ado.project} #${meta.ado.id}` : undefined,
       markdown: String(meta.content),
       generatedAt: String(meta.generatedAt ?? doc.created_at.toISOString()),
+      meta: meta.meta ?? undefined,
       nonce,
     }));
+  }
+
+  // PDF is rendered on demand and streamed directly; v1 intentionally does
+  // not store a second binary document row. It uses the exact same tenant
+  // guard and source metadata as the browser HTML endpoint.
+  @Roles('viewer')
+  @Get('story-docs/:docId/pdf')
+  async pdf(@Param('docId') docId: string, @Res() res: Response) {
+    const wsId = currentWorkspaceId();
+    if (!wsId) {
+      res.status(401).send('unauthorized');
+      return;
+    }
+    const doc = await this.prisma.documents.findFirst({ where: { id: docId, workspace_id: wsId } });
+    const meta = (doc?.metadata as any) ?? {};
+    if (!doc || !meta.content) {
+      res.status(404).send('doküman bulunamadı');
+      return;
+    }
+    const project = doc.project_id
+      ? await (this.prisma as any).projects.findUnique({
+          where: { id: doc.project_id },
+          include: { customer: { select: { name: true } } },
+        })
+      : null;
+    const nonce = randomBytes(16).toString('base64');
+    const html = renderDocHtml({
+      title: doc.title,
+      customer: project?.customer?.name ?? undefined,
+      project: project?.name ?? undefined,
+      adoRef: meta.ado ? `${meta.ado.org}/${meta.ado.project} #${meta.ado.id}` : undefined,
+      markdown: String(meta.content),
+      generatedAt: String(meta.generatedAt ?? doc.created_at.toISOString()),
+      meta: meta.meta ?? undefined,
+      mode: 'pdf',
+      nonce,
+    });
+
+    let rendered: globalThis.Response | null = null;
+    let renderError: Error | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        rendered = await fetch(`${SHOTTER_URL.replace(/\/+$/, '')}/render-pdf`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-internal-token': INTERNAL_TOKEN },
+          body: JSON.stringify({
+            html,
+            footerLeft: `${String(meta.ado?.title ?? doc.title)} · DYNAMICSOPS`,
+          }),
+          signal: AbortSignal.timeout(120_000),
+        });
+        if (rendered.status !== 429 || attempt === 2) break;
+        await rendered.text().catch(() => '');
+        await wait(750 * 2 ** attempt);
+      } catch (error) {
+        renderError = error as Error;
+        break;
+      }
+    }
+    if (!rendered?.ok) {
+      if (rendered) await rendered.text().catch(() => '');
+      this.logger.warn(`PDF render failed for ${docId}: ${renderError?.message ?? `shotter ${rendered?.status ?? 'unreachable'}`}`);
+      res.status(rendered?.status === 429 ? 503 : 502).send('PDF oluşturulamadı');
+      return;
+    }
+
+    const pdf = Buffer.from(await rendered.arrayBuffer());
+    const workItemId = String(meta.ado?.id ?? doc.id).replace(/[\r\n/\\?%*:|"<>]+/g, '-').slice(0, 120);
+    const asciiName = `egitim-${safeFilePart(workItemId)}.pdf`;
+    const unicodeName = `eğitim-${workItemId || 'doküman'}.pdf`;
+    res.status(200);
+    res.setHeader('content-type', 'application/pdf');
+    res.setHeader('content-length', String(pdf.length));
+    res.setHeader('content-disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${rfc5987(unicodeName)}`);
+    res.send(pdf);
   }
 }

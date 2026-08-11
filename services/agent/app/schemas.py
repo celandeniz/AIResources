@@ -71,6 +71,7 @@ class AgentRunRequest(BaseModel):
     activity: ActivityCtx
     context: RunContext = RunContext()
     options: dict[str, Any] = {}
+    images: Optional[list[str]] = None
 
 
 class Draft(BaseModel):

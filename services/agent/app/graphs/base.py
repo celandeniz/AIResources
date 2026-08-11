@@ -96,7 +96,7 @@ def reason_node(state: GraphState) -> GraphState:
     system = resource.system_prompt
     user = _build_user_prompt(state)
     try:
-        result, usage = provider.generate_json(system, user, resource.temperature)
+        result, usage = provider.generate_json(system, user, resource.temperature, images=req.images)
         usage = {**usage, "provider": getattr(provider, "name", resource.provider), "model": resource.model}
         return {"result": result, "usage": usage}
     except Exception as e:
@@ -113,7 +113,7 @@ def reason_node(state: GraphState) -> GraphState:
 
                 fb_model = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen3")
                 fb = OllamaProvider(fb_model)
-                result, usage = fb.generate_json(system, user, resource.temperature)
+                result, usage = fb.generate_json(system, user, resource.temperature, images=req.images)
                 usage = {**usage, "provider": "ollama", "model": fb_model, "fallback_from": resource.provider, "error": str(e)[:200]}
                 return {"result": result, "usage": usage}
             except Exception:

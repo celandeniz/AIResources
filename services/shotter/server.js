@@ -22,14 +22,24 @@ const SETTLE_MS = Number(process.env.SETTLE_MS || 6_000);
 fs.mkdirSync(STATE_DIR, { recursive: true });
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+const shootJson = express.json({ limit: '1mb' });
+const renderJson = express.json({ limit: '50mb' });
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
 // One request at a time — screenshots are rare and browsers are heavy.
 let busy = false;
 
-app.post('/shoot', async (req, res) => {
+app.post('/shoot', shootJson, async (req, res) => {
   if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
     return res.status(401).json({ ok: false, detail: 'unauthorized' });
   }
@@ -117,6 +127,95 @@ app.post('/shoot', async (req, res) => {
     if (browser) await browser.close().catch(() => {});
     busy = false;
     return res.json({ ok: false, detail: String(e && e.message ? e.message : e).slice(0, 500) });
+  }
+});
+
+app.post('/render-drawio', renderJson, async (req, res) => {
+  if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
+    return res.status(401).json({ ok: false, detail: 'unauthorized' });
+  }
+  const { xml } = req.body || {};
+  if (typeof xml !== 'string' || !xml.trim()) {
+    return res.status(400).json({ ok: false, detail: 'xml zorunlu' });
+  }
+  if (busy) return res.status(429).json({ ok: false, detail: 'shotter meşgul — tekrar deneyin' });
+  busy = true;
+
+  let browser;
+  try {
+    const graphConfig = escapeHtml(JSON.stringify({
+      highlight: '#0000ff',
+      nav: true,
+      resize: true,
+      toolbar: 'zoom layers lightbox',
+      edit: '_blank',
+      xml,
+    }));
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>html,body{margin:0;padding:0;background:#fff}.mxgraph{display:inline-block}</style>
+</head>
+<body>
+  <div class="mxgraph" data-mxgraph='${graphConfig}'></div>
+  <script src="https://viewer.diagrams.net/js/viewer.min.js"></script>
+</body>
+</html>`;
+
+    browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'domcontentloaded' });
+    const diagram = await page.waitForSelector('.mxgraph svg', { timeout: 30_000 });
+    const png = await diagram.screenshot({ type: 'png' });
+    return res.json({ ok: true, png: png.toString('base64') });
+  } catch (e) {
+    return res.status(500).json({ ok: false, detail: String(e && e.message ? e.message : e).slice(0, 500) });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    busy = false;
+  }
+});
+
+app.post('/render-pdf', renderJson, async (req, res) => {
+  if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
+    return res.status(401).json({ ok: false, detail: 'unauthorized' });
+  }
+  const { html, footerLeft } = req.body || {};
+  if (typeof html !== 'string' || !html.trim()) {
+    return res.status(400).json({ ok: false, detail: 'html zorunlu' });
+  }
+  if (busy) return res.status(429).json({ ok: false, detail: 'shotter meşgul — tekrar deneyin' });
+  busy = true;
+
+  let browser;
+  try {
+    browser = await chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle' });
+    await page
+      .waitForFunction('window.__docReady === true', undefined, { timeout: 45_000 })
+      .catch(() => page.waitForTimeout(2_000));
+
+    const footerTemplate = '<div style="font-size:9px;width:100%;padding:0 12mm;display:flex;justify-content:space-between">'
+      + `<span>${escapeHtml(footerLeft ?? '')}</span>`
+      + '<span><span class="pageNumber"></span> / <span class="totalPages"></span></span>'
+      + '</div>';
+    const pdf = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      displayHeaderFooter: true,
+      margin: { top: '18mm', bottom: '16mm', left: '12mm', right: '12mm' },
+      footerTemplate,
+      headerTemplate: '<span></span>',
+    });
+    res.type('application/pdf');
+    return res.send(pdf);
+  } catch (e) {
+    return res.status(500).json({ ok: false, detail: String(e && e.message ? e.message : e).slice(0, 500) });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    busy = false;
   }
 });
 

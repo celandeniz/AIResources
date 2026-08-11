@@ -39,12 +39,34 @@ class NvidiaProvider:
         if not self.key:
             raise RuntimeError("NVIDIA_API_KEY not set")
 
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        image_data = [image.strip() for image in (images or []) if image.strip()]
+        user_content: str | list[dict[str, Any]] = user
+        model = self.model
+        if image_data:
+            model = os.getenv("NVIDIA_VISION_MODEL") or "meta/llama-3.2-90b-vision-instruct"
+            user_content = [
+                {"type": "text", "text": user},
+                *[
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image}"},
+                    }
+                    for image in image_data
+                ],
+            ]
+
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
             "temperature": temperature,
             # Long structured drafts (project briefs, syntheses) overflow 2048

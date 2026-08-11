@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api, apiStreamUrl } from '../../../../lib/api';
@@ -9,7 +9,7 @@ import { Card } from '../../../../components/ui/card';
 import { Badge } from '../../../../components/ui/badge';
 import { Button } from '../../../../components/ui/button';
 import { Skeleton } from '../../../../components/ui/skeleton';
-import { Input } from '../../../../components/ui/input';
+import { Input, Select, Textarea } from '../../../../components/ui/input';
 import { Sheet, SheetContent, SheetTrigger } from '../../../../components/ui/sheet';
 import { KpiCard } from '../../../../components/charts';
 import { ExternalLink, Settings2, ClipboardCheck, Target } from 'lucide-react';
@@ -31,11 +31,18 @@ export default function ProjectDashboardPage() {
   const router = useRouter();
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [documentsRevision, setDocumentsRevision] = useState(0);
+  const [editDocumentId, setEditDocumentId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setData(await api(`/projects/${id}/dashboard`));
     setLoading(false);
   }, [id]);
+
+  const documentChanged = useCallback((docId?: string, edit = false) => {
+    setDocumentsRevision((revision) => revision + 1);
+    if (docId && edit) setEditDocumentId(docId);
+  }, []);
 
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
 
@@ -101,7 +108,22 @@ export default function ProjectDashboardPage() {
 
       <RoleBrief projectId={String(id)} brief={data.brief} onGenerated={load} />
 
-      <StoryAudit projectId={String(id)} audit={(data.project?.metadata as any)?.story_audit} adoOrg={p.devops_org} adoProject={p.devops_project} onDone={load} />
+      <StoryAudit
+        projectId={String(id)}
+        audit={(data.project?.metadata as any)?.story_audit}
+        adoOrg={p.devops_org}
+        adoProject={p.devops_project}
+        onDone={load}
+        onDocumentChanged={documentChanged}
+      />
+
+      <DocumentLibrary
+        projectId={String(id)}
+        revision={documentsRevision}
+        editDocumentId={editDocumentId}
+        onEditConsumed={() => setEditDocumentId(null)}
+        onChanged={() => documentChanged()}
+      />
 
       <div className="mt-6 grid gap-5 lg:grid-cols-[2fr_1fr]">
         <div className="space-y-5">
@@ -280,12 +302,22 @@ function BulkEnrich({ projectId, weak, states, onPick }: { projectId: string; we
   );
 }
 
-function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectId: string; audit: any; adoOrg?: string; adoProject?: string; onDone: () => void }) {
+function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone, onDocumentChanged }: {
+  projectId: string;
+  audit: any;
+  adoOrg?: string;
+  adoProject?: string;
+  onDone: () => void;
+  onDocumentChanged: (docId?: string, edit?: boolean) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [docBusy, setDocBusy] = useState<string | null>(null);
   const [planView, setPlanView] = useState<any>(null); // {storyId, planDocId, plan, story}
+  const [planSaving, setPlanSaving] = useState(false);
+  const [docRunView, setDocRunView] = useState<any>(null); // {storyId, title, run}
   const [fill, setFill] = useState<any>(null); // {storyId, title, description, acceptance}
   const [selectedStates, setSelectedStates] = useState<string[]>([]); // boş = tümü
+  const notifiedRuns = useRef(new Set<string>());
 
   async function run() {
     setBusy(true);
@@ -300,7 +332,22 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
   // Phase 1: readiness pre-analysis + plan. If content/environment isn't
   // sufficient, the system does NOT generate — it shows what's missing and
   // exactly where to fill it.
-  async function makePlan(wid: string, force = false) {
+  async function startDocBuild(wid: string, planDocId: string, title?: string) {
+    const r: any = await api(`/projects/${projectId}/stories/${wid}/doc`, {
+      method: 'POST',
+      body: JSON.stringify({ deliver: true, planDocId }),
+    });
+    if (!r?.ok || !r?.started) throw new Error(r?.detail ?? 'doküman üretimi başlatılamadı');
+    setDocRunView({
+      storyId: wid,
+      title,
+      run: { runId: r.runId, phase: 'running', section: 0, totalSections: 0, sectionName: 'Hazırlanıyor' },
+    });
+    setPlanView(null);
+    toast.success('Doküman bölüm hattı başlatıldı');
+  }
+
+  async function makePlan(wid: string, force = false, autoGenerate = false) {
     setDocBusy(wid);
     setPlanView(null);
     try {
@@ -310,9 +357,48 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
         setPlanView({ storyId: wid, notReady: true, checks: r.checks, story: r.story, children: r.children });
         return;
       }
-      setPlanView({ storyId: wid, planDocId: r.planDocId, plan: r.plan, story: r.story, checks: r.checks, children: r.children });
+      const nextPlan = { storyId: wid, planDocId: r.planDocId, plan: r.plan, story: r.story, checks: r.checks, children: r.children };
+      const hasBlocker = (r.checks ?? []).some((check: any) => check.blocker && !check.ok);
+      const exampleCheck = (r.checks ?? []).find((check: any) => check.key === 'ornek_kayit');
+      if (autoGenerate && r.ready === true && !hasBlocker && exampleCheck?.ok) {
+        await startDocBuild(wid, r.planDocId, r.story?.title);
+      } else {
+        setPlanView(nextPlan);
+      }
     } catch (e: any) { toast.error(e.message); } finally { setDocBusy(null); }
   }
+
+  const pollDocRun = useCallback(async (storyId: string, expectedRunId?: string) => {
+    try {
+      const response: any = await api(`/projects/${projectId}/stories/${storyId}/doc-run`);
+      const nextRun = response?.run ?? response;
+      if (!nextRun || response?.ok === false) return;
+      if (expectedRunId && nextRun.runId && String(nextRun.runId) !== String(expectedRunId)) return;
+      if (response.docId && !nextRun.docId) nextRun.docId = response.docId;
+      if (response.htmlPath && !nextRun.htmlPath) nextRun.htmlPath = response.htmlPath;
+      if (response.pdfPath && !nextRun.pdfPath) nextRun.pdfPath = response.pdfPath;
+      setDocRunView((current: any) => ({ ...current, storyId, run: nextRun }));
+      const runId = String(nextRun.runId ?? '');
+      if (nextRun.phase === 'done' && runId && !notifiedRuns.current.has(runId)) {
+        notifiedRuns.current.add(runId);
+        toast.success('Doküman hazır — HTML ve PDF çıktıları açılabilir');
+        onDocumentChanged(nextRun.docId ?? response.docId);
+        onDone();
+      } else if (nextRun.phase === 'failed' && runId && !notifiedRuns.current.has(runId)) {
+        notifiedRuns.current.add(runId);
+        toast.error(nextRun.error || 'Doküman koşusu başarısız oldu');
+      }
+    } catch { /* detached koşu sürerken geçici ağ hatasını bir sonraki turda yeniden dene */ }
+  }, [onDocumentChanged, onDone, projectId]);
+
+  useEffect(() => {
+    const run = docRunView?.run;
+    if (!docRunView?.storyId || run?.phase !== 'running') return;
+    const expectedRunId = run.runId ? String(run.runId) : undefined;
+    void pollDocRun(docRunView.storyId, expectedRunId);
+    const timer = setInterval(() => { void pollDocRun(docRunView.storyId, expectedRunId); }, 3000);
+    return () => clearInterval(timer);
+  }, [docRunView?.run?.phase, docRunView?.run?.runId, docRunView?.storyId, pollDocRun]);
 
   // Story Geliştirme Asistanı: develops the story from its Epic/Feature, the
   // project purpose and the product stack. The user edits, then explicitly
@@ -351,16 +437,43 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
     if (!planView) return;
     setDocBusy(planView.storyId);
     try {
-      const r: any = await api(`/projects/${projectId}/stories/${planView.storyId}/doc`, {
-        method: 'POST',
-        body: JSON.stringify({ deliver: true, planDocId: planView.planDocId }),
-      });
-      if (!r?.ok) throw new Error(r?.detail ?? 'doküman üretilemedi');
-      toast.success(`Doküman hazır — ${r.screenshots ?? 0} canlı ekran görüntüsü${r.delivered ? ', ADO bilgilendirildi' : ''}`);
-      window.open(apiStreamUrl(r.htmlPath), '_blank');
-      setPlanView(null);
-      onDone();
+      await startDocBuild(planView.storyId, planView.planDocId, planView.story?.title);
     } catch (e: any) { toast.error(e.message); } finally { setDocBusy(null); }
+  }
+
+  function updatePlanMeta(key: string, value: string) {
+    setPlanView((current: any) => current ? {
+      ...current,
+      plan: { ...current.plan, meta: { ...(current.plan?.meta ?? {}), [key]: value } },
+    } : current);
+  }
+
+  async function savePlanMeta() {
+    if (!planView?.planDocId) return;
+    setPlanSaving(true);
+    try {
+      const meta = planView.plan?.meta ?? {};
+      const response: any = await api(`/projects/${projectId}/stories/${planView.storyId}/doc-plan`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          planDocId: planView.planDocId,
+          meta: {
+            tur: meta.tur || 'egitim',
+            hedef_kitle: meta.hedef_kitle || 'Son kullanıcı',
+            ornek_kayit: meta.ornek_kayit || '',
+            surum: meta.surum || '1.0',
+          },
+        }),
+      });
+      if (!response?.ok) throw new Error(response?.detail ?? 'plan bilgileri kaydedilemedi');
+      setPlanView((current: any) => ({
+        ...current,
+        planDocId: response.planDocId ?? current.planDocId,
+        plan: response.plan ?? current.plan,
+        checks: response.checks ?? current.checks,
+      }));
+      toast.success('Doküman şablonu ve meta bilgileri kaydedildi');
+    } catch (e: any) { toast.error(e.message); } finally { setPlanSaving(false); }
   }
 
   const allRows: any[] = audit?.rows ?? [];
@@ -425,6 +538,58 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
           onPick={(d: any) => setFill(fillFromDraft(d.wid, d.story?.title, d.draft, d.context, d.docId))}
         />
       )}
+      {docRunView?.run && (
+        <div className={`mb-4 overflow-hidden rounded-lg border p-4 ${docRunView.run.phase === 'failed' ? 'border-red-500/40 bg-red-500/5' : docRunView.run.phase === 'done' ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-primary/40 bg-primary/5'}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold">
+                  {docRunView.run.phase === 'done' ? '✅ Doküman hazır' : docRunView.run.phase === 'failed' ? '⛔ Doküman koşusu durdu' : '📄 Doküman hazırlanıyor'}
+                </span>
+                <Badge variant="outline">#{docRunView.storyId}</Badge>
+                {docRunView.title && <span className="truncate text-sm text-muted-foreground">{docRunView.title}</span>}
+              </div>
+              {docRunView.run.phase === 'running' && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Bölüm {docRunView.run.section ?? 0}/{docRunView.run.totalSections || '…'} üretiliyor…
+                  {docRunView.run.sectionName ? ` (${docRunView.run.sectionName})` : ''}
+                </p>
+              )}
+              {docRunView.run.phase === 'failed' && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{docRunView.run.error || 'Koşu tamamlanamadı.'}</p>}
+              {docRunView.run.phase === 'done' && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {docRunView.run.screenshots ?? 0} ekran görüntüsü · {docRunView.run.totalSections ?? docRunView.run.sections?.length ?? 0} bölüm
+                </p>
+              )}
+            </div>
+            {docRunView.run.phase === 'done' && (
+              <div className="flex flex-wrap gap-2">
+                {docRunView.run.htmlPath && (
+                  <Button asChild size="sm" variant="outline">
+                    <a href={apiStreamUrl(docRunView.run.htmlPath)} target="_blank" rel="noreferrer">HTML aç</a>
+                  </Button>
+                )}
+                {docRunView.run.pdfPath && (
+                  <Button asChild size="sm" variant="outline">
+                    <a href={apiStreamUrl(docRunView.run.pdfPath)} target="_blank" rel="noreferrer" download>PDF indir</a>
+                  </Button>
+                )}
+                {docRunView.run.docId && (
+                  <Button size="sm" onClick={() => onDocumentChanged(docRunView.run.docId, true)}>Düzenle</Button>
+                )}
+              </div>
+            )}
+          </div>
+          {docRunView.run.phase === 'running' && (
+            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-primary/10" role="progressbar" aria-valuemin={0} aria-valuemax={docRunView.run.totalSections || 1} aria-valuenow={docRunView.run.section || 0}>
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-500"
+                style={{ width: `${docRunView.run.totalSections ? Math.max(4, Math.min(100, (Number(docRunView.run.section ?? 0) / Number(docRunView.run.totalSections)) * 100)) : 4}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
       {planView?.notReady && (
         <div className="mb-4 rounded-lg border border-amber-500/50 bg-amber-500/5 p-4">
           <div className="mb-2 flex items-center justify-between">
@@ -453,7 +618,9 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
                         ? <a className="text-primary underline" href={c.fix.url} target="_blank" rel="noreferrer">{c.fix.label}</a>
                         : c.fix.url?.startsWith('/')
                           ? <Link className="text-primary underline" href={c.fix.url}>{c.fix.label}</Link>
-                          : <code>{c.fix.label}</code>}
+                          : c.fix.url?.startsWith('#')
+                            ? <a className="text-primary underline" href={c.fix.url}>{c.fix.label}</a>
+                            : <code>{c.fix.label}</code>}
                     </div>
                   )}
                 </div>
@@ -541,10 +708,55 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
               <Button size="sm" variant="outline" onClick={() => setPlanView(null)}>İptal</Button>
             </div>
           </div>
-          <p className="mb-2 text-xs text-muted-foreground">
-            Ön analiz: {(planView.checks ?? []).map((c: any) => `${c.ok ? '✅' : c.blocker ? '⛔' : '⚠️'} ${c.key}`).join(' · ')}
-            {(planView.children ?? []).length > 0 && ` · ${planView.children.length} alt görev kaynak olarak kullanılacak`}
+          <p className="mb-3 text-xs text-muted-foreground">
+            Şablon ve teslimat bilgisini netleştirin. Uyarılar üretimi engellemez; somut örnek kayıt tek tık üretimi etkinleştirir.
+            {(planView.children ?? []).length > 0 && ` ${planView.children.length} alt görev kaynak olarak kullanılacak.`}
           </p>
+          <div id="doc-plan-meta" className="mb-4 scroll-mt-24 rounded-md border border-border/80 bg-background/60 p-3">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label="Şablon">
+                <Select
+                  value={planView.plan?.meta?.tur ?? 'egitim'}
+                  onChange={(e) => updatePlanMeta('tur', e.target.value)}
+                >
+                  <option value="egitim">Eğitim</option>
+                  <option value="surec">Süreç</option>
+                  <option value="kullanim">Kullanım kılavuzu</option>
+                </Select>
+              </Field>
+              <Field label="Hedef kitle">
+                <Select
+                  value={planView.plan?.meta?.hedef_kitle ?? 'Son kullanıcı'}
+                  onChange={(e) => updatePlanMeta('hedef_kitle', e.target.value)}
+                >
+                  <option value="Son kullanıcı">Son kullanıcı</option>
+                  <option value="Süper kullanıcı">Süper kullanıcı</option>
+                  <option value="Süreç sahibi">Süreç sahibi</option>
+                  <option value="Teknik ekip">Teknik ekip</option>
+                </Select>
+              </Field>
+              <Field label="Örnek kayıt">
+                <Input
+                  value={planView.plan?.meta?.ornek_kayit ?? ''}
+                  onChange={(e) => updatePlanMeta('ornek_kayit', e.target.value)}
+                  placeholder="Örn. SO-10428 / Contoso"
+                />
+              </Field>
+              <Field label="Sürüm">
+                <Input
+                  value={planView.plan?.meta?.surum ?? '1.0'}
+                  onChange={(e) => updatePlanMeta('surum', e.target.value)}
+                  placeholder="1.0"
+                />
+              </Field>
+            </div>
+            <div className="mt-3 flex justify-end">
+              <Button size="sm" variant="outline" onClick={savePlanMeta} disabled={planSaving}>
+                {planSaving ? 'Kaydediliyor…' : 'Kaydet'}
+              </Button>
+            </div>
+          </div>
+          <ReadinessChecklist checks={planView.checks ?? []} />
           <div className="grid gap-3 text-sm md:grid-cols-2">
             <div>
               <p><span className="text-muted-foreground">Platform:</span> <strong>{planView.plan.platform}</strong></p>
@@ -634,6 +846,13 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
                       {r.score < 50 && (
                         <Button size="sm" variant="ghost" title="AI ile açıklama + kabul kriteri taslağı" disabled={docBusy === String(r.id)} onClick={() => enrichStory(String(r.id))}>✍️</Button>
                       )}
+                      <Button
+                        size="sm"
+                        disabled={docBusy === String(r.id) || docRunView?.run?.phase === 'running'}
+                        onClick={() => makePlan(String(r.id), false, true)}
+                      >
+                        {docBusy === String(r.id) ? 'Hazırlanıyor…' : '📄 Doküman oluştur'}
+                      </Button>
                       <Button size="sm" variant="outline" disabled={docBusy === String(r.id)} onClick={() => makePlan(String(r.id))}>
                         {docBusy === String(r.id) ? 'Hazırlanıyor…' : '📋 Plan hazırla'}
                       </Button>
@@ -645,6 +864,262 @@ function StoryAudit({ projectId, audit, adoOrg, adoProject, onDone }: { projectI
           </table>
         </div>
       )}
+    </Card>
+  );
+}
+
+function ReadinessChecklist({ checks }: { checks: any[] }) {
+  if (!checks.length) return null;
+  return (
+    <ul className="mb-4 grid gap-2 text-sm md:grid-cols-2">
+      {checks.map((check: any) => (
+        <li key={check.key} className="flex items-start gap-2 rounded-md border border-border/70 bg-background/45 p-2.5">
+          <span aria-hidden>{check.ok ? '✅' : check.blocker ? '⛔' : '⚠️'}</span>
+          <div className="min-w-0">
+            <span>{check.message}</span>
+            {check.fix && (
+              <div className="mt-0.5 text-xs">
+                → {check.fix.url?.startsWith('http')
+                  ? <a className="text-primary underline" href={check.fix.url} target="_blank" rel="noreferrer">{check.fix.label}</a>
+                  : check.fix.url?.startsWith('/')
+                    ? <Link className="text-primary underline" href={check.fix.url}>{check.fix.label}</Link>
+                    : check.fix.url?.startsWith('#')
+                      ? <a className="text-primary underline" href={check.fix.url}>{check.fix.label}</a>
+                      : <code>{check.fix.label}</code>}
+              </div>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+type LibraryDocument = {
+  docId: string;
+  title: string;
+  wid?: string | number | null;
+  surum?: string | null;
+  screenshots?: number;
+  has_diagram?: boolean;
+  generatedAt?: string | null;
+  htmlPath?: string;
+  pdfPath?: string;
+  content?: string;
+  sections?: { key?: string; label?: string; title?: string }[];
+};
+
+const FALLBACK_DOC_SECTIONS = [
+  { key: 'purpose', label: 'Amaç ve ön koşullar' },
+  { key: 'concepts', label: 'Temel kavramlar' },
+  { key: 'flow', label: 'Süreç akışı' },
+  { key: 'situations', label: 'Durumlar ve terimler' },
+];
+
+function documentSectionOptions(doc: LibraryDocument) {
+  const stored = Array.isArray(doc.sections)
+    ? doc.sections
+      .map((section) => ({ key: String(section?.key ?? ''), label: String(section?.label ?? section?.title ?? section?.key ?? '') }))
+      .filter((section) => Boolean(section.key) && section.key !== 'cover')
+    : [];
+  return stored.length ? stored : FALLBACK_DOC_SECTIONS;
+}
+
+function DocumentLibrary({ projectId, revision, editDocumentId, onEditConsumed, onChanged }: {
+  projectId: string;
+  revision: number;
+  editDocumentId: string | null;
+  onEditConsumed: () => void;
+  onChanged: () => void;
+}) {
+  const [documents, setDocuments] = useState<LibraryDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [editor, setEditor] = useState<{ doc: LibraryDocument; content: string; loading: boolean } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [sectionByDoc, setSectionByDoc] = useState<Record<string, string>>({});
+  const [regenerating, setRegenerating] = useState<string | null>(null);
+
+  const loadDocuments = useCallback(async () => {
+    try {
+      const response: any = await api(`/projects/${projectId}/documents?kind=story_training_doc`);
+      const rows = Array.isArray(response) ? response : response?.documents ?? [];
+      setDocuments(rows);
+      setError('');
+    } catch (e: any) {
+      setError(e.message || 'dokümanlar yüklenemedi');
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => { void loadDocuments(); }, [loadDocuments, revision]);
+
+  const openEditor = useCallback(async (doc: LibraryDocument) => {
+    if (typeof doc.content === 'string') {
+      setEditor({ doc, content: doc.content, loading: false });
+      return;
+    }
+    setEditor({ doc, content: '', loading: true });
+    try {
+      // Older API responses did not expose content in the project library.
+      // Use the existing tenant-scoped knowledge list only as a compatibility
+      // bridge while upgraded deployments roll out.
+      const response: any = await api(`/documents?projectId=${encodeURIComponent(projectId)}`);
+      const rows = Array.isArray(response) ? response : response?.documents ?? [];
+      const full = rows.find((row: any) => String(row.id ?? row.docId) === String(doc.docId));
+      const content = full?.content ?? full?.metadata?.content;
+      if (typeof content !== 'string') throw new Error('Düzenlenebilir doküman içeriği bulunamadı');
+      setEditor({ doc: { ...doc, content }, content, loading: false });
+    } catch (e: any) {
+      setEditor(null);
+      toast.error(e.message);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!editDocumentId) return;
+    const doc = documents.find((item) => String(item.docId) === String(editDocumentId));
+    if (!doc) return;
+    void openEditor(doc);
+    onEditConsumed();
+  }, [documents, editDocumentId, onEditConsumed, openEditor]);
+
+  async function saveDocument() {
+    if (!editor || editor.loading) return;
+    setSaving(true);
+    try {
+      const response: any = await api(`/projects/${projectId}/documents/${editor.doc.docId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ content: editor.content }),
+      });
+      if (!response?.ok) throw new Error(response?.detail ?? 'doküman kaydedilemedi');
+      setDocuments((rows) => rows.map((row) => row.docId === editor.doc.docId ? { ...row, content: editor.content } : row));
+      setEditor(null);
+      toast.success('Doküman içeriği kaydedildi');
+      onChanged();
+    } catch (e: any) { toast.error(e.message); } finally { setSaving(false); }
+  }
+
+  async function regenerateSection(doc: LibraryDocument) {
+    const options = documentSectionOptions(doc);
+    const sectionKey = sectionByDoc[doc.docId] ?? options[0]?.key;
+    if (!doc.wid || !sectionKey) {
+      toast.error('Bölüm veya story kimliği bulunamadı');
+      return;
+    }
+    setRegenerating(doc.docId);
+    try {
+      const response: any = await api(`/projects/${projectId}/stories/${doc.wid}/doc/section`, {
+        method: 'POST',
+        body: JSON.stringify({ docId: doc.docId, sectionKey }),
+      });
+      if (!response?.ok) throw new Error(response?.detail ?? 'bölüm yeniden üretilemedi');
+      if (editor?.doc.docId === doc.docId) setEditor(null);
+      toast.success(`${options.find((option) => option.key === sectionKey)?.label ?? 'Bölüm'} yeniden üretildi`);
+      onChanged();
+    } catch (e: any) { toast.error(e.message); } finally { setRegenerating(null); }
+  }
+
+  return (
+    <Card className="mt-6 overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-4">
+        <div>
+          <SectionTitle>Dokümanlar</SectionTitle>
+          <p className="-mt-2 text-xs text-muted-foreground">Onaylı eğitim çıktıları, sürümleri ve yayın aksiyonları</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => { setLoading(true); void loadDocuments(); }} disabled={loading}>
+          {loading ? 'Yükleniyor…' : 'Yenile'}
+        </Button>
+      </div>
+      <div className="p-5">
+        {loading ? (
+          <div className="space-y-3"><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
+        ) : error ? (
+          <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+        ) : !documents.length ? (
+          <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center">
+            <p className="text-sm font-medium">Henüz yayınlanmış doküman yok</p>
+            <p className="mt-1 text-xs text-muted-foreground">Bir user story satırındaki “📄 Doküman oluştur” ile ilk çıktıyı başlatın.</p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {documents.map((doc) => {
+              const sectionOptions = documentSectionOptions(doc);
+              const selectedSection = sectionByDoc[doc.docId] ?? sectionOptions[0]?.key ?? '';
+              return (
+                <li key={doc.docId} className="grid gap-3 py-4 first:pt-0 last:pb-0 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-semibold">{doc.title}</span>
+                      {doc.wid != null && <Badge variant="outline">#{doc.wid}</Badge>}
+                      <Badge variant="neutral">v{doc.surum || '1.0'}</Badge>
+                      <Badge variant={(doc.screenshots ?? 0) > 0 ? 'success' : 'neutral'}>{doc.screenshots ?? 0} ekran</Badge>
+                      {doc.has_diagram && <Badge variant="default">diyagram</Badge>}
+                    </div>
+                    {doc.generatedAt && (
+                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">{new Date(doc.generatedAt).toLocaleString('tr-TR')}</p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {doc.htmlPath && (
+                      <Button asChild size="sm" variant="outline">
+                        <a href={apiStreamUrl(doc.htmlPath)} target="_blank" rel="noreferrer">HTML aç</a>
+                      </Button>
+                    )}
+                    {doc.pdfPath && (
+                      <Button asChild size="sm" variant="outline">
+                        <a href={apiStreamUrl(doc.pdfPath)} target="_blank" rel="noreferrer" download>PDF indir</a>
+                      </Button>
+                    )}
+                    <Button size="sm" variant="outline" onClick={() => void openEditor(doc)}>Düzenle</Button>
+                    <Select
+                      aria-label={`${doc.title} için yeniden üretilecek bölüm`}
+                      className="h-8 max-w-[190px] text-xs"
+                      value={selectedSection}
+                      onChange={(event) => setSectionByDoc((state) => ({ ...state, [doc.docId]: event.target.value }))}
+                    >
+                      {sectionOptions.map((section) => <option key={section.key} value={section.key}>{section.label}</option>)}
+                    </Select>
+                    <Button size="sm" variant="ghost" disabled={regenerating === doc.docId} onClick={() => void regenerateSection(doc)}>
+                      {regenerating === doc.docId ? 'Üretiliyor…' : '↻ yeniden üret'}
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <Sheet open={Boolean(editor)} onOpenChange={(open) => { if (!open && !saving) setEditor(null); }}>
+        {editor && (
+          <SheetContent className="max-w-3xl" title={`${editor.doc.title} — Düzenle`}>
+            <div className="flex h-full flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                {editor.doc.wid != null && <Badge variant="outline">Story #{editor.doc.wid}</Badge>}
+                <Badge variant="neutral">Markdown</Badge>
+                <span>Kaydetme işlemi yalnız bu dokümanın içeriğini günceller.</span>
+              </div>
+              {editor.loading ? (
+                <Skeleton className="min-h-[28rem] flex-1" />
+              ) : (
+                <Textarea
+                  aria-label="Doküman Markdown içeriği"
+                  className="min-h-[28rem] flex-1 resize-none rounded-md border border-border bg-background p-3 font-mono text-xs leading-5 focus:outline-none focus:ring-2 focus:ring-ring"
+                  value={editor.content}
+                  onChange={(event) => setEditor({ ...editor, content: event.target.value })}
+                  spellCheck={false}
+                />
+              )}
+              <div className="flex justify-end gap-2 border-t border-border pt-3">
+                <Button variant="ghost" onClick={() => setEditor(null)} disabled={saving}>Vazgeç</Button>
+                <Button onClick={saveDocument} disabled={saving || editor.loading}>{saving ? 'Kaydediliyor…' : 'Kaydet'}</Button>
+              </div>
+            </div>
+          </SheetContent>
+        )}
+      </Sheet>
     </Card>
   );
 }

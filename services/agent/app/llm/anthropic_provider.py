@@ -15,7 +15,13 @@ class AnthropicProvider:
 
         self.client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
-    def generate_json(self, system: str, user: str, temperature: float) -> tuple[dict[str, Any], dict[str, Any]]:
+    def generate_json(
+        self,
+        system: str,
+        user: str,
+        temperature: float,
+        images: list[str] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         msg = self.client.messages.create(
             model=self.model,
             max_tokens=2000,
