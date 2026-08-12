@@ -16,7 +16,7 @@
       "name": "NVIDIA NIM (free cloud)",
       "options": { "baseURL": "https://integrate.api.nvidia.com/v1", "apiKey": "{env:NVIDIA_API_KEY}" },
       "models": {
-        "qwen/qwen2.5-coder-32b-instruct": { "name": "Qwen2.5 Coder 32B (NIM)" },
+        "deepseek-ai/deepseek-v4-flash-0731": { "name": "DeepSeek V4 Flash (NIM, code)" },
         "meta/llama-3.3-70b-instruct": { "name": "Llama 3.3 70B (NIM)" }
       }
     }

@@ -12,7 +12,7 @@ from .base import extract_json
 
 # NVIDIA NIM (build.nvidia.com free APIs) via the OpenAI-compatible REST
 # endpoint — no extra SDK dependency. Models: meta/llama-3.3-70b-instruct,
-# qwen/qwen2.5-coder-32b-instruct, meta/llama-3.1-8b-instruct, …
+# meta/llama-3.1-8b-instruct, meta/llama-3.2-11b-vision-instruct (vision), …
 # Key: NVIDIA_API_KEY (free at build.nvidia.com).
 
 _DEFAULT_BASE = "https://integrate.api.nvidia.com/v1"
@@ -50,7 +50,9 @@ class NvidiaProvider:
         user_content: str | list[dict[str, Any]] = user
         model = self.model
         if image_data:
-            model = os.getenv("NVIDIA_VISION_MODEL") or "meta/llama-3.2-90b-vision-instruct"
+            # 11b-vision answers in ~1s on the free tier; 90b-vision consistently
+            # times out. Override with NVIDIA_VISION_MODEL for higher accuracy.
+            model = os.getenv("NVIDIA_VISION_MODEL") or "meta/llama-3.2-11b-vision-instruct"
             user_content = [
                 {"type": "text", "text": user},
                 *[

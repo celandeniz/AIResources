@@ -69,8 +69,15 @@ export type LlmProvider = (typeof LLM_PROVIDERS)[number];
 // deliberately excluded from defaults (reasoning tokens blow the 2048 cap).
 export const NVIDIA_MODELS = {
   heavy: 'meta/llama-3.3-70b-instruct', // reasoning/drafting-heavy roles
-  coder: 'qwen/qwen2.5-coder-32b-instruct', // code-centric roles
+  // qwen2.5-coder-32b was retired from NIM (HTTP 410 Gone). llama-3.3-70b is the
+  // strongest live model that reliably emits the AgentResult JSON envelope and
+  // outperforms the old coder model on code+reasoning; deepseek-v4-flash-0731 is
+  // available on NIM as a per-resource opt-in via the Directory for heavier code.
+  coder: 'meta/llama-3.3-70b-instruct', // code-centric roles (see note above)
   light: 'meta/llama-3.1-8b-instruct', // classification/triage/light drafting
+  // Vision (screen field/value extraction). 90b-vision times out on the free
+  // tier; 11b-vision answers in ~1s and reads D365 screens reliably.
+  vision: 'meta/llama-3.2-11b-vision-instruct',
 } as const;
 
 export const INTEGRATION_TYPES = [

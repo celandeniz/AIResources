@@ -895,7 +895,7 @@ export class StoryDocsController {
           'Parola, erişim belirteci veya gizli değerleri alma. Okunmayan değeri uydurma. draft.content içinde yalnız `| Alan | Değer |` başlıklı Markdown tablosu yaz. ' +
           'Yanıtın TAMAMI AgentResult JSON nesnesi olsun; draft.kind="note", recipients=[], citations=[], tool_intents=[].',
         provider: 'nvidia',
-        model: process.env.NVIDIA_VISION_MODEL?.trim() || 'meta/llama-3.2-90b-vision-instruct',
+        model: process.env.NVIDIA_VISION_MODEL?.trim() || 'meta/llama-3.2-11b-vision-instruct',
         temperature: 0.1,
         tools: [],
         confidence_threshold: 0.5,
